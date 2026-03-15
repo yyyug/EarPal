@@ -3,6 +3,13 @@ import Foundation
 
 @MainActor
 final class LiveTranslateViewModel: ObservableObject {
+    struct AppleTranslationRequest: Equatable {
+        let id = UUID()
+        let text: String
+        let sourceLanguageID: String
+        let targetLanguageID: String
+    }
+
     struct HistoryItem: Identifiable {
         let id = UUID()
         let timestamp: Date
@@ -23,6 +30,7 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var isShowingModelManagement = false
     @Published var history: [HistoryItem] = []
     @Published var statusMessage = ""
+    @Published var appleTranslationRequest: AppleTranslationRequest?
 
     let languageOptions = TranslationLanguage.commonOptions
     let voiceOptions = ["Default", "Warm", "Clear"]
@@ -65,6 +73,25 @@ final class LiveTranslateViewModel: ObservableObject {
         transcriptText = ""
         translatedText = ""
         statusMessage = ""
+        appleTranslationRequest = nil
+    }
+
+    func receiveAppleTranslation(_ translatedText: String, for request: AppleTranslationRequest) {
+        guard appleTranslationRequest == request else { return }
+        self.translatedText = translatedText
+        self.statusMessage = ""
+    }
+
+    func failAppleTranslation(_ error: Error, for request: AppleTranslationRequest) {
+        guard appleTranslationRequest == request else { return }
+        translatedText = ""
+        statusMessage = error.localizedDescription
+    }
+
+    func appleTranslationUnavailable(for request: AppleTranslationRequest) {
+        guard appleTranslationRequest == request else { return }
+        translatedText = ""
+        statusMessage = "Apple Translate requires iOS 18.0 or later."
     }
 
     func refreshTranslationIfNeeded() {
@@ -128,14 +155,20 @@ final class LiveTranslateViewModel: ObservableObject {
         let sourceText = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else {
             translatedText = ""
+            appleTranslationRequest = nil
             return
         }
 
         switch modelManager.selectedTranslationEngine {
         case .apple:
-            translatedText = "Apple Translate runtime is not wired in this build yet."
-            statusMessage = translatedText
+            statusMessage = "Translating..."
+            appleTranslationRequest = AppleTranslationRequest(
+                text: sourceText,
+                sourceLanguageID: sourceLanguage.id,
+                targetLanguageID: targetLanguage.id
+            )
         case .translateGemma:
+            appleTranslationRequest = nil
             do {
                 translatedText = try await LocalInferenceRuntime(modelManager: modelManager)
                     .translateWithTranslateGemma(text: sourceText)

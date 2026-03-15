@@ -18,6 +18,7 @@
 		B10000010000000000000009 /* AppleSpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000010 /* AppleSpeechRecognizer.swift */; };
 		B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000011 /* LocalInferenceRuntime.swift */; };
 		B1000001000000000000000B /* ModelManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000012 /* ModelManagementView.swift */; };
+		B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000013 /* AppleTranslationBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		B10001010000000000000010 /* AppleSpeechRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechRecognizer.swift; sourceTree = "<group>"; };
 		B10001010000000000000011 /* LocalInferenceRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalInferenceRuntime.swift; sourceTree = "<group>"; };
 		B10001010000000000000012 /* ModelManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManagementView.swift; sourceTree = "<group>"; };
+		B10001010000000000000013 /* AppleTranslationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTranslationBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -99,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				B10001010000000000000005 /* LiveTranslateView.swift */,
+				B10001010000000000000013 /* AppleTranslationBridge.swift */,
 				B10001010000000000000012 /* ModelManagementView.swift */,
 			);
 			path = Views;
@@ -192,6 +195,7 @@
 				B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */,
 				B10000010000000000000004 /* LiveTranslateViewModel.swift in Sources */,
 				B10000010000000000000005 /* LiveTranslateView.swift in Sources */,
+				B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */,
 				B1000001000000000000000B /* ModelManagementView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

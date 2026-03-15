@@ -38,6 +38,9 @@ struct LiveTranslateView: View {
                 ModelManagementView()
                     .environmentObject(modelManager)
             }
+            .overlay(alignment: .topLeading) {
+                appleTranslationBridge
+            }
             .onChange(of: viewModel.sourceLanguage) { _, _ in
                 viewModel.refreshTranslationIfNeeded()
             }
@@ -145,6 +148,32 @@ struct LiveTranslateView: View {
             .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var appleTranslationBridge: some View {
+        if modelManager.selectedTranslationEngine == .apple,
+           let request = viewModel.appleTranslationRequest {
+            if #available(iOS 18.0, *) {
+                AppleTranslationBridge(
+                    request: request,
+                    onTranslated: { translatedText in
+                        viewModel.receiveAppleTranslation(translatedText, for: request)
+                    },
+                    onFailure: { error in
+                        viewModel.failAppleTranslation(error, for: request)
+                    }
+                )
+                .frame(width: 0, height: 0)
+                .hidden()
+            } else {
+                Color.clear
+                    .frame(width: 0, height: 0)
+                    .task(id: request.id) {
+                        viewModel.appleTranslationUnavailable(for: request)
+                    }
+            }
+        }
     }
 
 }
