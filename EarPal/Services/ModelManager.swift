@@ -15,7 +15,7 @@ final class ModelManager: ObservableObject {
 
     init() {
         let installedIDs = Set(defaults.stringArray(forKey: installedModelsKey) ?? [])
-        models = [
+        let initialModels = [
             InferenceModel(
                 id: "apple-speech",
                 displayName: "Apple Speech",
@@ -87,12 +87,13 @@ final class ModelManager: ObservableObject {
                 statusNote: "Download configured in app storage. Runtime wiring is pending."
             )
         ]
+        models = initialModels
 
         let storedASR = ASREngine(rawValue: defaults.string(forKey: selectedASRKey) ?? "") ?? .apple
-        selectedASREngine = ModelManager.resolveASREngine(storedASR, with: models)
+        selectedASREngine = ModelManager.resolveASREngine(storedASR, with: initialModels)
 
         let storedTranslation = TranslationEngine(rawValue: defaults.string(forKey: selectedTranslationKey) ?? "") ?? .apple
-        selectedTranslationEngine = ModelManager.resolveTranslationEngine(storedTranslation, with: models)
+        selectedTranslationEngine = ModelManager.resolveTranslationEngine(storedTranslation, with: initialModels)
     }
 
     var asrModels: [InferenceModel] {
