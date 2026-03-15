@@ -1,15 +1,9 @@
 import AVFAudio
 import Foundation
 
-struct CapturedAudio {
-    let samples: [Float]
-    let sampleRate: Int
-}
-
 enum AudioCaptureRecorderError: LocalizedError {
     case microphonePermissionDenied
     case recordingUnavailable
-    case emptyRecording
 
     var errorDescription: String? {
         switch self {
@@ -17,18 +11,17 @@ enum AudioCaptureRecorderError: LocalizedError {
             return "Microphone permission is not available."
         case .recordingUnavailable:
             return "Audio recording is unavailable right now."
-        case .emptyRecording:
-            return "No audio was captured."
         }
     }
 }
 
-@MainActor
 final class AudioCaptureRecorder {
     private let audioEngine = AVAudioEngine()
-    private var capturedSamples: [Float] = []
-    private var currentSampleRate = 16_000
+    private var audioConverter: AVAudioConverter?
+    private var targetFormat: AVAudioFormat?
+    private let stateLock = NSLock()
     private var isRecording = false
+    private var chunkHandler: (@Sendable ([Float], Int) -> Void)?
 
     func requestPermission() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
@@ -47,13 +40,32 @@ final class AudioCaptureRecorder {
         }
     }
 
-    func startRecording() throws {
-        guard !isRecording else { return }
+    func startRecording(onSamples: (@Sendable ([Float], Int) -> Void)? = nil) throws {
+        stateLock.lock()
+        if isRecording {
+            stateLock.unlock()
+            return
+        }
+        chunkHandler = onSamples
+        stateLock.unlock()
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
-        currentSampleRate = Int(inputFormat.sampleRate)
-        capturedSamples.removeAll(keepingCapacity: true)
+        guard
+            let targetFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+        else {
+            throw AudioCaptureRecorderError.recordingUnavailable
+        }
+        stateLock.lock()
+        self.audioConverter = converter
+        self.targetFormat = targetFormat
+        stateLock.unlock()
 
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothHFP])
@@ -61,39 +73,85 @@ final class AudioCaptureRecorder {
 
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let channelData = buffer.floatChannelData?.pointee else { return }
-            let frameLength = Int(buffer.frameLength)
-            guard frameLength > 0 else { return }
-            self.capturedSamples.append(contentsOf: UnsafeBufferPointer(start: channelData, count: frameLength))
+            self?.processIncomingBuffer(buffer)
         }
 
         audioEngine.prepare()
         do {
             try audioEngine.start()
+            stateLock.lock()
             isRecording = true
+            stateLock.unlock()
         } catch {
             inputNode.removeTap(onBus: 0)
             throw AudioCaptureRecorderError.recordingUnavailable
         }
     }
 
-    func stopRecording() throws -> CapturedAudio {
-        guard isRecording else {
+    func stopRecording() throws {
+        stateLock.lock()
+        let currentlyRecording = isRecording
+        isRecording = false
+        chunkHandler = nil
+        stateLock.unlock()
+
+        guard currentlyRecording else {
             throw AudioCaptureRecorderError.recordingUnavailable
         }
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        isRecording = false
+        stateLock.lock()
+        audioConverter = nil
+        targetFormat = nil
+        stateLock.unlock()
+    }
 
-        let output = CapturedAudio(samples: capturedSamples, sampleRate: currentSampleRate)
-        capturedSamples.removeAll(keepingCapacity: false)
+    private func processIncomingBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let converted = convertToTargetBuffer(buffer) else { return }
+        guard let channelData = converted.floatChannelData?.pointee else { return }
+        let frameLength = Int(converted.frameLength)
+        guard frameLength > 0 else { return }
 
-        guard !output.samples.isEmpty else {
-            throw AudioCaptureRecorderError.emptyRecording
+        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
+
+        stateLock.lock()
+        let handler = chunkHandler
+        stateLock.unlock()
+        handler?(samples, 16_000)
+    }
+
+    private func convertToTargetBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        stateLock.lock()
+        let audioConverter = self.audioConverter
+        let targetFormat = self.targetFormat
+        stateLock.unlock()
+        guard let audioConverter, let targetFormat else { return nil }
+
+        let targetFrameCapacity = AVAudioFrameCount(
+            (Double(buffer.frameLength) * targetFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
+        ) + 32
+
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetFrameCapacity) else {
+            return nil
         }
 
-        return output
+        var didProvideInput = false
+        var conversionError: NSError?
+        let status = audioConverter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+            if didProvideInput {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+
+            didProvideInput = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        guard conversionError == nil else { return nil }
+        guard status == .haveData || status == .inputRanDry else { return nil }
+        return outputBuffer
     }
 }

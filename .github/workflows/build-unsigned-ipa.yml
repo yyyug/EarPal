@@ -20,10 +20,17 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Install CocoaPods
+        run: |
+          gem list cocoapods -i || sudo gem install cocoapods
+
+      - name: Install Pods
+        run: pod install
+
       - name: Build app for device
         run: |
           xcodebuild \
-            -project EarPal.xcodeproj \
+            -workspace EarPal.xcworkspace \
             -scheme EarPal \
             -configuration Release \
             -sdk iphoneos \

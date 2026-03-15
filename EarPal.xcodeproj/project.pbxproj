@@ -24,6 +24,8 @@
 		B1000001000000000000000F /* ParakeetASR in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000001 /* ParakeetASR */; };
 		B10000010000000000000010 /* Qwen3ASR in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000002 /* Qwen3ASR */; };
 		B10000010000000000000011 /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000003 /* AudioCommon */; };
+		B10000010000000000000012 /* SpeechVAD in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000004 /* SpeechVAD */; };
+		B10000010000000000000013 /* TranslateGemmaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000016 /* TranslateGemmaService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +45,7 @@
 		B10001010000000000000013 /* AppleTranslationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTranslationBridge.swift; sourceTree = "<group>"; };
 		B10001010000000000000014 /* AudioCaptureRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureRecorder.swift; sourceTree = "<group>"; };
 		B10001010000000000000015 /* LocalASRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalASRService.swift; sourceTree = "<group>"; };
+		B10001010000000000000016 /* TranslateGemmaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslateGemmaService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,6 +56,7 @@
 				B10000010000000000000011 /* AudioCommon in Frameworks */,
 				B1000001000000000000000F /* ParakeetASR in Frameworks */,
 				B10000010000000000000010 /* Qwen3ASR in Frameworks */,
+				B10000010000000000000012 /* SpeechVAD in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,6 +129,7 @@
 				B10001010000000000000014 /* AudioCaptureRecorder.swift */,
 				B10001010000000000000011 /* LocalInferenceRuntime.swift */,
 				B10001010000000000000015 /* LocalASRService.swift */,
+				B10001010000000000000016 /* TranslateGemmaService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -149,6 +154,7 @@
 				B10009000000000000000001 /* ParakeetASR */,
 				B10009000000000000000002 /* Qwen3ASR */,
 				B10009000000000000000003 /* AudioCommon */,
+				B10009000000000000000004 /* SpeechVAD */,
 			);
 			productName = EarPal;
 			productReference = B10001000000000000000001 /* EarPal.app */;
@@ -215,6 +221,7 @@
 				B1000001000000000000000D /* AudioCaptureRecorder.swift in Sources */,
 				B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */,
 				B1000001000000000000000E /* LocalASRService.swift in Sources */,
+				B10000010000000000000013 /* TranslateGemmaService.swift in Sources */,
 				B10000010000000000000004 /* LiveTranslateViewModel.swift in Sources */,
 				B10000010000000000000005 /* LiveTranslateView.swift in Sources */,
 				B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */,
@@ -250,6 +257,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
 			productName = AudioCommon;
+		};
+		B10009000000000000000004 /* SpeechVAD */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = SpeechVAD;
 		};
 /* End XCSwiftPackageProductDependency section */
 

@@ -3,11 +3,15 @@ import Combine
 import Foundation
 import ParakeetASR
 import Qwen3ASR
+import SpeechVAD
 
 @MainActor
 final class ModelManager: ObservableObject {
     static let parakeetModelID = ParakeetASRModel.defaultModelId
     static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
+    static let sileroVADModelID = SileroVADModel.defaultCoreMLModelId
+    static let translateGemmaDownloadURL = URL(string: "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true")!
+    static let translateGemmaFileName = "gemma-3n-E2B-it-int4.task"
 
     @Published private(set) var models: [InferenceModel]
     @Published var selectedASREngine: ASREngine
@@ -83,8 +87,16 @@ final class ModelManager: ObservableObject {
                         }
                     }
                     model.unload()
+                    _ = try await SileroVADModel.fromPretrained(
+                        modelId: Self.sileroVADModelID,
+                        engine: .coreml
+                    ) { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
                     await MainActor.run {
-                        self.markInstalled(id: modelID, note: "Parakeet downloaded to local cache.")
+                        self.markInstalled(id: modelID, note: "Parakeet and live VAD downloaded to local cache.")
                     }
                 case "qwen3-asr":
                     let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
@@ -93,12 +105,26 @@ final class ModelManager: ObservableObject {
                         }
                     }
                     model.unload()
+                    _ = try await SileroVADModel.fromPretrained(
+                        modelId: Self.sileroVADModelID,
+                        engine: .coreml
+                    ) { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
                     await MainActor.run {
-                        self.markInstalled(id: modelID, note: "Qwen3-ASR downloaded to local cache.")
+                        self.markInstalled(id: modelID, note: "Qwen3-ASR and live VAD downloaded to local cache.")
                     }
                 case "translate-gemma":
-                    try installMarker(for: models[index])
-                    markInstalled(id: modelID, note: "Placeholder install saved in app storage.")
+                    try await downloadTranslateGemmaModel { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
+                    await MainActor.run {
+                        self.markInstalled(id: modelID, note: "TranslateGemma downloaded to app storage.")
+                    }
                 default:
                     break
                 }
@@ -118,10 +144,16 @@ final class ModelManager: ObservableObject {
             switch id {
             case "parakeet-asr":
                 try removeCachedModel(modelID: Self.parakeetModelID)
+                if !Self.isQwenInstalled(fileManager: fileManager) {
+                    try removeCachedModel(modelID: Self.sileroVADModelID)
+                }
             case "qwen3-asr":
                 try removeCachedModel(modelID: Self.qwen3ASRModelID)
+                if !Self.isParakeetInstalled(fileManager: fileManager) {
+                    try removeCachedModel(modelID: Self.sileroVADModelID)
+                }
             case "translate-gemma":
-                try deleteMarker(for: models[index])
+                try deleteTranslateGemmaModel()
             default:
                 break
             }
@@ -163,7 +195,7 @@ final class ModelManager: ObservableObject {
     private static func makeInitialModels(installedIDs: Set<String>, fileManager: FileManager) -> [InferenceModel] {
         let parakeetInstalled = isParakeetInstalled(fileManager: fileManager)
         let qwenInstalled = isQwenInstalled(fileManager: fileManager)
-        let translateGemmaInstalled = installedIDs.contains("translate-gemma")
+        let translateGemmaInstalled = isTranslateGemmaInstalled(fileManager: fileManager) || installedIDs.contains("translate-gemma")
 
         return [
             InferenceModel(
@@ -229,12 +261,12 @@ final class ModelManager: ObservableObject {
                 engineID: TranslationEngine.translateGemma.rawValue,
                 supportsLanguages: ["en", "zh-Hant", "zh-Hans", "ja", "ko"],
                 sizeDescription: "~1.2 GB",
-                downloadURL: nil,
+                downloadURL: Self.translateGemmaDownloadURL,
                 isBuiltIn: false,
                 isInstalled: translateGemmaInstalled,
                 isDownloading: false,
                 downloadProgress: translateGemmaInstalled ? 1 : 0,
-                statusNote: "Download lifecycle is wired. Runtime is still pending."
+                statusNote: translateGemmaInstalled ? "Ready for on-device translation." : "Downloads a Gemma .task model for on-device translation."
             )
         ]
     }
@@ -255,6 +287,13 @@ final class ModelManager: ObservableObject {
         }
         return HuggingFaceDownloader.weightsExist(in: cacheDir)
             && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("vocab.json").path)
+    }
+
+    private static func isTranslateGemmaInstalled(fileManager: FileManager) -> Bool {
+        guard let modelURL = try? translateGemmaModelFileURL(fileManager: fileManager) else {
+            return false
+        }
+        return fileManager.fileExists(atPath: modelURL.path)
     }
 
     private static func resolveASREngine(_ engine: ASREngine, with models: [InferenceModel]) -> ASREngine {
@@ -287,20 +326,30 @@ final class ModelManager: ObservableObject {
         }
     }
 
-    private func installMarker(for model: InferenceModel) throws {
-        let modelFolder = try modelFolderURL(for: model.id)
-        try fileManager.createDirectory(at: modelFolder, withIntermediateDirectories: true)
-        let markerURL = modelFolder.appendingPathComponent("metadata.json")
-        let data = try JSONEncoder().encode([
-            "id": model.id,
-            "displayName": model.displayName,
-            "installedAt": ISO8601DateFormatter().string(from: .now)
-        ])
-        try data.write(to: markerURL, options: .atomic)
+    func translateGemmaModelFileURL() throws -> URL {
+        try Self.translateGemmaModelFileURL(fileManager: fileManager)
     }
 
-    private func deleteMarker(for model: InferenceModel) throws {
-        let modelFolder = try modelFolderURL(for: model.id)
+    private func downloadTranslateGemmaModel(
+        progressHandler: @escaping @Sendable (Double, String) -> Void
+    ) async throws {
+        progressHandler(0.05, "Starting TranslateGemma download...")
+        let (temporaryURL, _) = try await URLSession.shared.download(from: Self.translateGemmaDownloadURL)
+        let modelURL = try Self.translateGemmaModelFileURL(fileManager: fileManager)
+        let modelFolder = modelURL.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: modelFolder.path) {
+            try fileManager.createDirectory(at: modelFolder, withIntermediateDirectories: true)
+        }
+        if fileManager.fileExists(atPath: modelURL.path) {
+            try fileManager.removeItem(at: modelURL)
+        }
+        progressHandler(0.9, "Saving TranslateGemma model...")
+        try fileManager.moveItem(at: temporaryURL, to: modelURL)
+        progressHandler(1.0, "TranslateGemma ready.")
+    }
+
+    private func deleteTranslateGemmaModel() throws {
+        let modelFolder = try modelFolderURL(for: "translate-gemma")
         if fileManager.fileExists(atPath: modelFolder.path) {
             try fileManager.removeItem(at: modelFolder)
         }
@@ -325,5 +374,23 @@ final class ModelManager: ObservableObject {
             try fileManager.createDirectory(at: modelsURL, withIntermediateDirectories: true)
         }
         return modelsURL.appendingPathComponent(modelID, isDirectory: true)
+    }
+
+    private static func translateGemmaModelFileURL(fileManager: FileManager) throws -> URL {
+        let baseURL = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let modelsURL = baseURL.appendingPathComponent("EarPalModels", isDirectory: true)
+        if !fileManager.fileExists(atPath: modelsURL.path) {
+            try fileManager.createDirectory(at: modelsURL, withIntermediateDirectories: true)
+        }
+        let gemmaFolder = modelsURL.appendingPathComponent("translate-gemma", isDirectory: true)
+        if !fileManager.fileExists(atPath: gemmaFolder.path) {
+            try fileManager.createDirectory(at: gemmaFolder, withIntermediateDirectories: true)
+        }
+        return gemmaFolder.appendingPathComponent(translateGemmaFileName, isDirectory: false)
     }
 }

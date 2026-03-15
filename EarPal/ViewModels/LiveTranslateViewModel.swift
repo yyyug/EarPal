@@ -39,6 +39,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private let speechRecognizer: AppleSpeechRecognizer
     private let audioRecorder: AudioCaptureRecorder
     private let localASRService: LocalASRService
+    private var localStreamingSession: LocalASRStreamingSession?
     private var translationTask: Task<Void, Never>?
 
     init(
@@ -76,6 +77,11 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     func clearSession() {
+        let session = localStreamingSession
+        localStreamingSession = nil
+        Task {
+            await session?.cancel()
+        }
         transcriptText = ""
         translatedText = ""
         statusMessage = ""
@@ -86,6 +92,7 @@ final class LiveTranslateViewModel: ObservableObject {
         guard appleTranslationRequest == request else { return }
         self.translatedText = translatedText
         self.statusMessage = ""
+        storeHistoryIfPossible()
     }
 
     func failAppleTranslation(_ error: Error, for request: AppleTranslationRequest) {
@@ -123,10 +130,34 @@ final class LiveTranslateViewModel: ObservableObject {
             }
 
             do {
-                try audioRecorder.startRecording()
-                statusMessage = "Recording for offline transcription..."
+                statusMessage = "Loading \(modelManager.selectedASREngine.displayName)..."
+                let session = try await localASRService.makeStreamingSession(
+                    engine: modelManager.selectedASREngine,
+                    progressHandler: { [weak self] _, status in
+                        Task { @MainActor in
+                            self?.statusMessage = status
+                        }
+                    },
+                    transcriptHandler: { [weak self] update in
+                        Task { @MainActor in
+                            self?.handleLocalTranscriptUpdate(update)
+                        }
+                    }
+                )
+                localStreamingSession = session
+                try audioRecorder.startRecording(onSamples: { samples, _ in
+                    Task {
+                        await session.append(samples: samples)
+                    }
+                })
+                statusMessage = "Listening with \(modelManager.selectedASREngine.displayName) offline..."
                 isListening = true
             } catch {
+                let session = localStreamingSession
+                localStreamingSession = nil
+                Task {
+                    await session?.cancel()
+                }
                 statusMessage = error.localizedDescription
             }
             return
@@ -150,11 +181,17 @@ final class LiveTranslateViewModel: ObservableObject {
     private func stopListening() {
         if modelManager.selectedASREngine != .apple {
             do {
-                let capturedAudio = try audioRecorder.stopRecording()
+                try audioRecorder.stopRecording()
                 isListening = false
-                statusMessage = "Transcribing locally..."
+                statusMessage = "Finalizing offline transcription..."
+                let session = localStreamingSession
+                localStreamingSession = nil
                 Task { [weak self] in
-                    await self?.runLocalTranscription(capturedAudio)
+                    await session?.finish()
+                    await MainActor.run {
+                        self?.statusMessage = ""
+                        self?.storeHistoryIfPossible()
+                    }
                 }
             } catch {
                 isListening = false
@@ -184,23 +221,10 @@ final class LiveTranslateViewModel: ObservableObject {
         refreshTranslationIfNeeded()
     }
 
-    private func runLocalTranscription(_ capturedAudio: CapturedAudio) async {
-        do {
-            let transcript = try await localASRService.transcribe(
-                audio: capturedAudio,
-                engine: modelManager.selectedASREngine
-            ) { [weak self] _, status in
-                Task { @MainActor in
-                    self?.statusMessage = status
-                }
-            }
-
-            transcriptText = transcript
-            statusMessage = ""
-            refreshTranslationIfNeeded()
-        } catch {
-            statusMessage = error.localizedDescription
-        }
+    private func handleLocalTranscriptUpdate(_ update: LocalASRTranscriptUpdate) {
+        transcriptText = update.text
+        statusMessage = update.statusMessage
+        refreshTranslationIfNeeded()
     }
 
     private func translateCurrentTranscript() async {
@@ -223,12 +247,35 @@ final class LiveTranslateViewModel: ObservableObject {
             appleTranslationRequest = nil
             do {
                 translatedText = try await LocalInferenceRuntime(modelManager: modelManager)
-                    .translateWithTranslateGemma(text: sourceText)
+                    .translateWithTranslateGemma(
+                        text: sourceText,
+                        sourceLanguage: sourceLanguage,
+                        targetLanguage: targetLanguage
+                    )
                 statusMessage = ""
+                storeHistoryIfPossible()
             } catch {
                 translatedText = ""
                 statusMessage = error.localizedDescription
             }
         }
+    }
+
+    private func storeHistoryIfPossible() {
+        let transcript = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translation = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !isListening else { return }
+        guard !transcript.isEmpty, !translation.isEmpty else { return }
+        guard history.first?.transcript != transcript || history.first?.translation != translation else { return }
+
+        history.insert(
+            HistoryItem(
+                timestamp: .now,
+                transcript: transcript,
+                translation: translation
+            ),
+            at: 0
+        )
     }
 }

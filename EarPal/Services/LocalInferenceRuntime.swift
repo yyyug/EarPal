@@ -1,13 +1,13 @@
 import Foundation
 
 enum LocalInferenceRuntimeError: LocalizedError {
-    case runtimeNotIntegrated(String)
+    case runtimeUnavailable(String)
     case modelNotInstalled(String)
 
     var errorDescription: String? {
         switch self {
-        case .runtimeNotIntegrated(let name):
-            return "\(name) is selected and stored locally, but its on-device runtime is not integrated into this build yet."
+        case .runtimeUnavailable(let name):
+            return "\(name) is not available in this build. Make sure the MediaPipe runtime is linked and the model is installed."
         case .modelNotInstalled(let name):
             return "\(name) is not installed on this device."
         }
@@ -18,11 +18,21 @@ enum LocalInferenceRuntimeError: LocalizedError {
 struct LocalInferenceRuntime {
     let modelManager: ModelManager
 
-    func translateWithTranslateGemma(text: String) async throws -> String {
+    func translateWithTranslateGemma(
+        text: String,
+        sourceLanguage: TranslationLanguage,
+        targetLanguage: TranslationLanguage
+    ) async throws -> String {
         guard modelManager.canUse(.translateGemma) else {
             throw LocalInferenceRuntimeError.modelNotInstalled(TranslationEngine.translateGemma.displayName)
         }
 
-        throw LocalInferenceRuntimeError.runtimeNotIntegrated(TranslationEngine.translateGemma.displayName)
+        let modelURL = try modelManager.translateGemmaModelFileURL()
+        return try await TranslateGemmaService.shared.translate(
+            text: text,
+            sourceLanguage: sourceLanguage,
+            targetLanguage: targetLanguage,
+            modelPath: modelURL.path
+        )
     }
 }
