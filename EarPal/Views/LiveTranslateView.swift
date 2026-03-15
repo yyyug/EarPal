@@ -268,18 +268,6 @@ private struct SettingsSheet: View {
 
                 ModelSettingsSections()
                     .environmentObject(modelManager)
-
-                Section("History") {
-                    NavigationLink("View History") {
-                        HistoryListView()
-                            .environmentObject(viewModel)
-                    }
-
-                    Button("Clear History", role: .destructive) {
-                        viewModel.history.removeAll()
-                    }
-                    .disabled(viewModel.history.isEmpty)
-                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -295,33 +283,6 @@ private struct SettingsSheet: View {
     private var speechRatePercentageText: String {
         let normalized = ((viewModel.speechRate - 0.2) / 0.6).clamped(to: 0...1)
         return "\(Int((normalized * 100).rounded()))%"
-    }
-}
-
-private struct HistoryListView: View {
-    @EnvironmentObject private var viewModel: LiveTranslateViewModel
-
-    var body: some View {
-        List {
-            if viewModel.history.isEmpty {
-                Text("No saved conversations yet.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(viewModel.history) { item in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(item.transcript)
-                            .font(.body.weight(.medium))
-                        Text(item.translation)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-        .navigationTitle("History")
     }
 }
 

@@ -3,6 +3,8 @@ import Foundation
 
 @MainActor
 final class LiveTranslateViewModel: ObservableObject {
+    private static let speechSegmentationPauseThreshold: TimeInterval = 1.0
+
     struct AppleTranslationRequest: Equatable {
         let id = UUID()
         let generation: Int
@@ -18,13 +20,6 @@ final class LiveTranslateViewModel: ObservableObject {
         case failed(String)
     }
 
-    struct HistoryItem: Identifiable {
-        let id = UUID()
-        let timestamp: Date
-        let transcript: String
-        let translation: String
-    }
-
     @Published var sourceLanguage = TranslationLanguage.english
     @Published var targetLanguage = TranslationLanguage.traditionalChinese
     @Published var transcriptText = ""
@@ -35,9 +30,7 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var selectedVoiceIdentifier = ""
     @Published private(set) var availableVoices: [AppleSpeechPlaybackService.VoiceOption] = []
     @Published var isShowingAudioOptions = false
-    @Published var isShowingHistory = false
     @Published var isShowingModelManagement = false
-    @Published var history: [HistoryItem] = []
     @Published var statusMessage = ""
     @Published var translationStatus: TranslationStatus = .idle
     @Published var appleTranslationRequest: AppleTranslationRequest?
@@ -253,7 +246,6 @@ final class LiveTranslateViewModel: ObservableObject {
                     await session?.finish()
                     await MainActor.run {
                         self?.statusMessage = ""
-                        self?.storeHistoryIfPossible()
                     }
                 }
             } catch {
@@ -271,10 +263,12 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func handleRecognizedText(_ text: String) {
-        let latestSentence = latestDisplayTranscript(from: text)
+        let now = Date.now
+        let startedAfterPause = now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold
+        let latestSentence = latestDisplayTranscript(from: text, startedAfterPause: startedAfterPause)
         transcriptText = latestSentence
         pendingTranscriptText = normalizeTranscript(latestSentence)
-        lastTranscriptChangeAt = .now
+        lastTranscriptChangeAt = now
         if pendingTranscriptText.isEmpty {
             translationDebounceTask?.cancel()
             translationStatus = .idle
@@ -284,10 +278,13 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func handleLocalTranscriptUpdate(_ update: LocalASRTranscriptUpdate) {
-        transcriptText = update.text
+        let now = Date.now
+        let startedAfterPause = now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold
+        let latestSegment = latestDisplayTranscript(from: update.text, startedAfterPause: startedAfterPause)
+        transcriptText = latestSegment
         statusMessage = update.statusMessage
-        pendingTranscriptText = normalizeTranscript(update.text)
-        lastTranscriptChangeAt = .now
+        pendingTranscriptText = normalizeTranscript(latestSegment)
+        lastTranscriptChangeAt = now
         if update.isFinal {
             scheduleTranslationEvaluation(stable: true)
         } else {
@@ -313,14 +310,14 @@ final class LiveTranslateViewModel: ObservableObject {
 
         translationStatus = .waitingForStableInput
         translationDebounceTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .seconds(Self.speechSegmentationPauseThreshold))
             await self?.confirmStableAndTranslate(candidateText: sourceText)
         }
     }
 
     private func confirmStableAndTranslate(candidateText: String) {
         guard candidateText == normalizeTranscript(pendingTranscriptText) else { return }
-        guard Date.now.timeIntervalSince(lastTranscriptChangeAt) >= 0.7 else { return }
+        guard Date.now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold else { return }
         beginTranslation(for: candidateText)
     }
 
@@ -390,7 +387,6 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedEngineID = modelManager.selectedTranslationEngine.rawValue
         lastCompletedDisplayTranscript = lastTranslatedTranscriptText
         translationStatus = .idle
-        storeHistoryIfPossible()
 
         if autoSpeak {
             speechPlaybackService.speak(
@@ -420,26 +416,24 @@ final class LiveTranslateViewModel: ObservableObject {
             .joined(separator: " ")
     }
 
-    private func latestDisplayTranscript(from recognizedText: String) -> String {
+    private func latestDisplayTranscript(from recognizedText: String, startedAfterPause: Bool) -> String {
         let normalized = normalizeTranscript(recognizedText)
         guard !normalized.isEmpty else { return "" }
+
+        if startedAfterPause,
+           let suffixAfterCompleted = suffixAfterPrefix(normalized, prefix: lastCompletedDisplayTranscript),
+           !suffixAfterCompleted.isEmpty {
+            return suffixAfterCompleted
+        }
 
         if !lastCompletedDisplayTranscript.isEmpty,
            normalized == lastCompletedDisplayTranscript {
             return lastCompletedDisplayTranscript
         }
 
-        if !lastCompletedDisplayTranscript.isEmpty,
-           normalized.hasPrefix(lastCompletedDisplayTranscript) {
-            let suffixStart = normalized.index(
-                normalized.startIndex,
-                offsetBy: lastCompletedDisplayTranscript.count
-            )
-            let suffix = String(normalized[suffixStart...])
-                .trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?;:"))
-            if !suffix.isEmpty {
-                return suffix
-            }
+        if let suffixAfterCompleted = suffixAfterPrefix(normalized, prefix: lastCompletedDisplayTranscript),
+           !suffixAfterCompleted.isEmpty {
+            return suffixAfterCompleted
         }
 
         let separators = CharacterSet(charactersIn: ".!?。！？\n")
@@ -455,6 +449,14 @@ final class LiveTranslateViewModel: ObservableObject {
         return normalized
     }
 
+    private func suffixAfterPrefix(_ text: String, prefix: String) -> String? {
+        guard !prefix.isEmpty, text.hasPrefix(prefix) else { return nil }
+
+        let suffixStart = text.index(text.startIndex, offsetBy: prefix.count)
+        return String(text[suffixStart...])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?;:"))
+    }
+
     private func shouldTranslate(_ normalizedTranscript: String) -> Bool {
         guard normalizedTranscript != lastTranslatedTranscriptText else {
             return sourceLanguage.id != lastTranslatedSourceLanguageID
@@ -463,23 +465,5 @@ final class LiveTranslateViewModel: ObservableObject {
         }
 
         return true
-    }
-
-    private func storeHistoryIfPossible() {
-        let transcript = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let translation = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !isListening else { return }
-        guard !transcript.isEmpty, !translation.isEmpty else { return }
-        guard history.first?.transcript != transcript || history.first?.translation != translation else { return }
-
-        history.insert(
-            HistoryItem(
-                timestamp: .now,
-                transcript: transcript,
-                translation: translation
-            ),
-            at: 0
-        )
     }
 }
