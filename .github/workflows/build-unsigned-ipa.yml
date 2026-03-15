@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      DERIVED_DATA_PATH: ${{ github.workspace }}/.ci/DerivedData
+      CLONED_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci/SourcePackages
 
     steps:
       - name: Checkout
@@ -20,6 +23,18 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Restore Xcode package cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.DERIVED_DATA_PATH }}
+            ${{ env.CLONED_SOURCE_PACKAGES_PATH }}
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/org.swift.swiftpm
+          key: ${{ runner.os }}-xcode-packages-${{ hashFiles('EarPal.xcodeproj/project.pbxproj', 'Podfile', 'Podfile.lock', 'EarPal.xcworkspace/xcshareddata/swiftpm/Package.resolved', '.github/workflows/build-unsigned-ipa.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-packages-
+
       - name: Install CocoaPods
         run: |
           gem list cocoapods -i || sudo gem install cocoapods
@@ -29,12 +44,15 @@ jobs:
 
       - name: Build app for device
         run: |
+          mkdir -p "$DERIVED_DATA_PATH" "$CLONED_SOURCE_PACKAGES_PATH"
           xcodebuild \
             -workspace EarPal.xcworkspace \
             -scheme EarPal \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -clonedSourcePackagesDirPath "$CLONED_SOURCE_PACKAGES_PATH" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

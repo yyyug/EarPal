@@ -2,18 +2,53 @@ import AVFAudio
 import Foundation
 
 @MainActor
-final class AppleSpeechPlaybackService {
-    private let synthesizer = AVSpeechSynthesizer()
+final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
+    struct VoiceOption: Identifiable, Hashable {
+        let identifier: String
+        let displayName: String
+        let languageID: String
+        let qualityDescription: String
 
-    func speak(text: String, languageID: String, speechRate: Double, voiceLabel: String) {
+        var id: String { identifier }
+
+        var accessibilityLabel: String {
+            qualityDescription.isEmpty ? displayName : "\(displayName), \(qualityDescription)"
+        }
+    }
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private let audioSession = AVAudioSession.sharedInstance()
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func availableVoices(for languageID: String) -> [VoiceOption] {
+        candidateVoices(for: languageID).map { voice in
+            VoiceOption(
+                identifier: voice.identifier,
+                displayName: voiceDisplayName(for: voice),
+                languageID: voice.language,
+                qualityDescription: qualityDescription(for: voice)
+            )
+        }
+    }
+
+    func defaultVoiceIdentifier(for languageID: String) -> String? {
+        defaultVoice(for: languageID, candidates: candidateVoices(for: languageID))?.identifier
+    }
+
+    func speak(text: String, languageID: String, speechRate: Double, voiceIdentifier: String?) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         stopSpeaking()
+        prepareAudioSessionForSpeech()
 
         let utterance = AVSpeechUtterance(string: trimmed)
         utterance.rate = normalizedRate(from: speechRate)
-        utterance.voice = resolveVoice(languageID: languageID, voiceLabel: voiceLabel)
+        utterance.voice = resolveVoice(languageID: languageID, voiceIdentifier: voiceIdentifier)
         utterance.prefersAssistiveTechnologySettings = false
         synthesizer.speak(utterance)
     }
@@ -21,6 +56,15 @@ final class AppleSpeechPlaybackService {
     func stopSpeaking() {
         guard synthesizer.isSpeaking else { return }
         synthesizer.stopSpeaking(at: .immediate)
+        deactivateAudioSession()
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        deactivateAudioSession()
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        deactivateAudioSession()
     }
 
     private func normalizedRate(from sliderValue: Double) -> Float {
@@ -31,17 +75,16 @@ final class AppleSpeechPlaybackService {
         return minRate + ((maxRate - minRate) * normalized)
     }
 
-    private func resolveVoice(languageID: String, voiceLabel: String) -> AVSpeechSynthesisVoice? {
+    private func resolveVoice(languageID: String, voiceIdentifier: String?) -> AVSpeechSynthesisVoice? {
         let candidates = candidateVoices(for: languageID)
 
-        switch voiceLabel {
-        case "Warm":
-            return warmVoice(from: candidates) ?? defaultVoice(for: languageID, candidates: candidates)
-        case "Clear":
-            return clearVoice(from: candidates) ?? defaultVoice(for: languageID, candidates: candidates)
-        default:
-            return defaultVoice(for: languageID, candidates: candidates)
+        if let voiceIdentifier,
+           let matchingVoice = candidates.first(where: { $0.identifier == voiceIdentifier })
+            ?? AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
+            return matchingVoice
         }
+
+        return defaultVoice(for: languageID, candidates: candidates)
     }
 
     private func candidateVoices(for languageID: String) -> [AVSpeechSynthesisVoice] {
@@ -65,49 +108,46 @@ final class AppleSpeechPlaybackService {
             ?? candidates.first
     }
 
-    private func warmVoice(from candidates: [AVSpeechSynthesisVoice]) -> AVSpeechSynthesisVoice? {
-        candidates
-            .sorted { scoreForWarmVoice($0) > scoreForWarmVoice($1) }
-            .first
+    private func voiceDisplayName(for voice: AVSpeechSynthesisVoice) -> String {
+        let components = voice.identifier
+            .split(separator: ".")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+
+        let baseName = components.last ?? voice.identifier
+        let normalized = baseName
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+
+        if normalized.caseInsensitiveCompare(voice.language) == .orderedSame {
+            return voice.identifier
+        }
+
+        return normalized
+            .split(separator: " ")
+            .map { word in
+                word.isEmpty ? "" : word.prefix(1).uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
     }
 
-    private func clearVoice(from candidates: [AVSpeechSynthesisVoice]) -> AVSpeechSynthesisVoice? {
-        candidates
-            .sorted { scoreForClearVoice($0) > scoreForClearVoice($1) }
-            .first
+    private func qualityDescription(for voice: AVSpeechSynthesisVoice) -> String {
+        switch voice.quality {
+        case .enhanced:
+            return "Enhanced"
+        case .default:
+            return "Default quality"
+        @unknown default:
+            return ""
+        }
     }
 
-    private func scoreForWarmVoice(_ voice: AVSpeechSynthesisVoice) -> Int {
-        var score = 0
-        let identifier = voice.identifier.lowercased()
-
-        if voice.quality == .enhanced {
-            score += 50
-        }
-        if identifier.contains("premium") || identifier.contains("siri") || identifier.contains("eloquence") {
-            score += 20
-        }
-        if identifier.contains("compact") {
-            score -= 10
-        }
-
-        return score
+    private func prepareAudioSessionForSpeech() {
+        try? audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
-    private func scoreForClearVoice(_ voice: AVSpeechSynthesisVoice) -> Int {
-        var score = 0
-        let identifier = voice.identifier.lowercased()
-
-        if voice.quality == .default {
-            score += 30
-        }
-        if identifier.contains("compact") {
-            score += 20
-        }
-        if identifier.contains("premium") || identifier.contains("siri") || identifier.contains("eloquence") {
-            score -= 10
-        }
-
-        return score
+    private func deactivateAudioSession() {
+        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
     }
 }

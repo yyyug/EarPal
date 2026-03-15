@@ -95,7 +95,6 @@ actor LocalASRStreamingSession {
     private let maxSegmentDuration: Float = 10.0
 
     private var fullAudio: [Float] = []
-    private var committedSegments: [String] = []
     private var activeSpeechStartSample: Int?
     private var lastPartialTime: Float = 0
     private var isClosed = false
@@ -195,7 +194,7 @@ actor LocalASRStreamingSession {
         } catch {
             transcriptHandler(
                 LocalASRTranscriptUpdate(
-                    text: combinedTranscript(partial: nil),
+                    text: "",
                     isFinal: false,
                     statusMessage: error.localizedDescription
                 )
@@ -207,10 +206,9 @@ actor LocalASRStreamingSession {
         guard !trimmed.isEmpty else { return }
 
         if isFinal {
-            committedSegments.append(trimmed)
             transcriptHandler(
                 LocalASRTranscriptUpdate(
-                    text: combinedTranscript(partial: nil),
+                    text: trimmed,
                     isFinal: true,
                     statusMessage: ""
                 )
@@ -218,20 +216,12 @@ actor LocalASRStreamingSession {
         } else {
             transcriptHandler(
                 LocalASRTranscriptUpdate(
-                    text: combinedTranscript(partial: trimmed),
+                    text: trimmed,
                     isFinal: false,
                     statusMessage: "Listening with \(engineName) offline..."
                 )
             )
         }
-    }
-
-    private func combinedTranscript(partial: String?) -> String {
-        var components = committedSegments
-        if let partial, !partial.isEmpty {
-            components.append(partial)
-        }
-        return components.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var engineName: String {

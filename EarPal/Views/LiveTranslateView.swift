@@ -26,10 +26,6 @@ struct LiveTranslateView: View {
                 .ignoresSafeArea()
             )
             .navigationTitle("EarPal")
-            .sheet(isPresented: $viewModel.isShowingHistory) {
-                HistorySheet()
-                    .environmentObject(viewModel)
-            }
             .sheet(isPresented: settingsPresented) {
                 SettingsSheet()
                     .environmentObject(viewModel)
@@ -42,6 +38,7 @@ struct LiveTranslateView: View {
                 viewModel.refreshTranslationIfNeeded()
             }
             .onChange(of: viewModel.targetLanguage) { _, _ in
+                viewModel.refreshAvailableVoices()
                 viewModel.refreshTranslationIfNeeded()
             }
             .onChange(of: modelManager.selectedTranslationEngine) { _, _ in
@@ -124,11 +121,6 @@ struct LiveTranslateView: View {
         HStack(spacing: 12) {
             Button("Settings") {
                 viewModel.isShowingAudioOptions = true
-            }
-            .buttonStyle(.bordered)
-
-            Button("History") {
-                viewModel.isShowingHistory = true
             }
             .buttonStyle(.bordered)
         }
@@ -256,16 +248,38 @@ private struct SettingsSheet: View {
                 Section("Speech Output") {
                     Toggle("Auto Speak", isOn: $viewModel.autoSpeak)
 
-                    Picker("Voice", selection: $viewModel.selectedVoiceLabel) {
-                        ForEach(viewModel.voiceOptions, id: \.self) { option in
-                            Text(option).tag(option)
+                    if viewModel.availableVoices.isEmpty {
+                        LabeledContent("Voice") {
+                            Text("No Apple voices available")
+                                .foregroundStyle(.secondary)
                         }
+                    } else {
+                        Picker("Voice", selection: $viewModel.selectedVoiceIdentifier) {
+                            ForEach(viewModel.availableVoices) { voice in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(voice.displayName)
+                                    if !voice.qualityDescription.isEmpty {
+                                        Text(voice.qualityDescription)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .tag(voice.identifier)
+                            }
+                        }
+                    }
+
+                    if let selectedVoice = viewModel.availableVoices.first(where: { $0.identifier == viewModel.selectedVoiceIdentifier }) {
+                        Text("Identifier: \(selectedVoice.identifier)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Speech Speed")
                         Slider(value: $viewModel.speechRate, in: 0.2...0.8, step: 0.05)
-                        Text(viewModel.speechRate.formatted(.number.precision(.fractionLength(2))))
+                        Text(speechRatePercentageText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -273,6 +287,18 @@ private struct SettingsSheet: View {
 
                 ModelSettingsSections()
                     .environmentObject(modelManager)
+
+                Section("History") {
+                    NavigationLink("View History") {
+                        HistoryListView()
+                            .environmentObject(viewModel)
+                    }
+
+                    Button("Clear History", role: .destructive) {
+                        viewModel.history.removeAll()
+                    }
+                    .disabled(viewModel.history.isEmpty)
+                }
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -284,49 +310,43 @@ private struct SettingsSheet: View {
             }
         }
     }
+
+    private var speechRatePercentageText: String {
+        let normalized = ((viewModel.speechRate - 0.2) / 0.6).clamped(to: 0...1)
+        return "\(Int((normalized * 100).rounded()))%"
+    }
 }
 
-private struct HistorySheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct HistoryListView: View {
     @EnvironmentObject private var viewModel: LiveTranslateViewModel
 
     var body: some View {
-        NavigationStack {
-            List {
-                if viewModel.history.isEmpty {
-                    Text("No saved conversations yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(viewModel.history) { item in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(item.transcript)
-                                .font(.body.weight(.medium))
-                            Text(item.translation)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
+        List {
+            if viewModel.history.isEmpty {
+                Text("No saved conversations yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.history) { item in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(item.timestamp.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(item.transcript)
+                            .font(.body.weight(.medium))
+                        Text(item.translation)
+                            .foregroundStyle(.secondary)
                     }
-                }
-            }
-            .navigationTitle("History")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Clear") {
-                        viewModel.history.removeAll()
-                    }
-                    .disabled(viewModel.history.isEmpty)
+                    .padding(.vertical, 4)
                 }
             }
         }
+        .navigationTitle("History")
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 

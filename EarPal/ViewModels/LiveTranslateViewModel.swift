@@ -32,7 +32,8 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var isListening = false
     @Published var autoSpeak = true
     @Published var speechRate: Double = 0.5
-    @Published var selectedVoiceLabel = "Default"
+    @Published var selectedVoiceIdentifier = ""
+    @Published private(set) var availableVoices: [AppleSpeechPlaybackService.VoiceOption] = []
     @Published var isShowingAudioOptions = false
     @Published var isShowingHistory = false
     @Published var isShowingModelManagement = false
@@ -42,7 +43,6 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var appleTranslationRequest: AppleTranslationRequest?
 
     let languageOptions = TranslationLanguage.commonOptions
-    let voiceOptions = ["Default", "Warm", "Clear"]
 
     private let modelManager: ModelManager
     private let speechRecognizer: AppleSpeechRecognizer
@@ -60,6 +60,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private var lastTranslatedTargetLanguageID = ""
     private var lastTranslatedEngineID = ""
     private var lastTranscriptChangeAt = Date.distantPast
+    private var lastCompletedDisplayTranscript = ""
 
     init(
         modelManager: ModelManager,
@@ -80,6 +81,8 @@ final class LiveTranslateViewModel: ObservableObject {
         self.speechRecognizer.onStopped = { [weak self] in
             self?.isListening = false
         }
+
+        refreshAvailableVoices()
     }
 
     func toggleListening() async {
@@ -94,7 +97,20 @@ final class LiveTranslateViewModel: ObservableObject {
         let currentSource = sourceLanguage
         sourceLanguage = targetLanguage
         targetLanguage = currentSource
+        refreshAvailableVoices()
         refreshTranslationIfNeeded()
+    }
+
+    func refreshAvailableVoices() {
+        availableVoices = speechPlaybackService.availableVoices(for: targetLanguage.id)
+
+        if availableVoices.contains(where: { $0.identifier == selectedVoiceIdentifier }) {
+            return
+        }
+
+        selectedVoiceIdentifier = speechPlaybackService.defaultVoiceIdentifier(for: targetLanguage.id)
+            ?? availableVoices.first?.identifier
+            ?? ""
     }
 
     func clearSession() {
@@ -115,6 +131,7 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedSourceLanguageID = ""
         lastTranslatedTargetLanguageID = ""
         lastTranslatedEngineID = ""
+        lastCompletedDisplayTranscript = ""
     }
 
     func receiveAppleTranslation(_ translatedText: String, for request: AppleTranslationRequest) {
@@ -251,25 +268,19 @@ final class LiveTranslateViewModel: ObservableObject {
         if !pendingTranscriptText.isEmpty {
             scheduleTranslationEvaluation(stable: true)
         }
-
-        if !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            history.insert(
-                HistoryItem(
-                    timestamp: .now,
-                    transcript: transcriptText,
-                    translation: translatedText
-                ),
-                at: 0
-            )
-        }
     }
 
     private func handleRecognizedText(_ text: String) {
-        transcriptText = text
-        pendingTranscriptText = normalizeTranscript(text)
+        let latestSentence = latestDisplayTranscript(from: text)
+        transcriptText = latestSentence
+        pendingTranscriptText = normalizeTranscript(latestSentence)
         lastTranscriptChangeAt = .now
-        scheduleTranslationEvaluation(stable: false)
+        if pendingTranscriptText.isEmpty {
+            translationDebounceTask?.cancel()
+            translationStatus = .idle
+        } else {
+            scheduleTranslationEvaluation(stable: false)
+        }
     }
 
     private func handleLocalTranscriptUpdate(_ update: LocalASRTranscriptUpdate) {
@@ -377,6 +388,7 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedSourceLanguageID = sourceLanguage.id
         lastTranslatedTargetLanguageID = targetLanguage.id
         lastTranslatedEngineID = modelManager.selectedTranslationEngine.rawValue
+        lastCompletedDisplayTranscript = lastTranslatedTranscriptText
         translationStatus = .idle
         storeHistoryIfPossible()
 
@@ -385,7 +397,7 @@ final class LiveTranslateViewModel: ObservableObject {
                 text: normalizedTranslation,
                 languageID: targetLanguage.id,
                 speechRate: speechRate,
-                voiceLabel: selectedVoiceLabel
+                voiceIdentifier: selectedVoiceIdentifier
             )
         }
     }
@@ -406,6 +418,41 @@ final class LiveTranslateViewModel: ObservableObject {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    private func latestDisplayTranscript(from recognizedText: String) -> String {
+        let normalized = normalizeTranscript(recognizedText)
+        guard !normalized.isEmpty else { return "" }
+
+        if !lastCompletedDisplayTranscript.isEmpty,
+           normalized == lastCompletedDisplayTranscript {
+            return lastCompletedDisplayTranscript
+        }
+
+        if !lastCompletedDisplayTranscript.isEmpty,
+           normalized.hasPrefix(lastCompletedDisplayTranscript) {
+            let suffixStart = normalized.index(
+                normalized.startIndex,
+                offsetBy: lastCompletedDisplayTranscript.count
+            )
+            let suffix = String(normalized[suffixStart...])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,.!?;:"))
+            if !suffix.isEmpty {
+                return suffix
+            }
+        }
+
+        let separators = CharacterSet(charactersIn: ".!?。！？\n")
+        let segments = normalized
+            .components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if let latestSegment = segments.last {
+            return latestSegment
+        }
+
+        return normalized
     }
 
     private func shouldTranslate(_ normalizedTranscript: String) -> Bool {
