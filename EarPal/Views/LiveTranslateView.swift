@@ -1,14 +1,8 @@
 import SwiftUI
-#if canImport(Translation)
-import Translation
-#endif
 
 struct LiveTranslateView: View {
     @EnvironmentObject private var viewModel: LiveTranslateViewModel
     @EnvironmentObject private var modelManager: ModelManager
-    #if canImport(Translation)
-    @State private var translationConfiguration: TranslationSession.Configuration?
-    #endif
 
     var body: some View {
         NavigationStack {
@@ -44,34 +38,15 @@ struct LiveTranslateView: View {
                 ModelManagementView()
                     .environmentObject(modelManager)
             }
-            .onChange(of: viewModel.pendingAppleTranslationText) { _, _ in
-                triggerAppleTranslationIfNeeded()
-            }
             .onChange(of: viewModel.sourceLanguage) { _, _ in
-                triggerAppleTranslationIfNeeded(forceRebuild: true)
+                viewModel.refreshTranslationIfNeeded()
             }
             .onChange(of: viewModel.targetLanguage) { _, _ in
-                triggerAppleTranslationIfNeeded(forceRebuild: true)
+                viewModel.refreshTranslationIfNeeded()
             }
             .onChange(of: modelManager.selectedTranslationEngine) { _, _ in
                 viewModel.refreshTranslationIfNeeded()
-                triggerAppleTranslationIfNeeded(forceRebuild: true)
             }
-            .modifier(
-                AppleTranslationTaskModifier(
-                    configuration: appleTranslationConfigurationBinding,
-                    sourceText: viewModel.pendingAppleTranslationText,
-                    onTranslated: { translatedText, sourceText in
-                        viewModel.receiveAppleTranslation(translatedText, sourceText: sourceText)
-                    },
-                    onUnavailable: {
-                        viewModel.handleAppleTranslationUnavailable()
-                    },
-                    onFailure: { error in
-                        viewModel.handleAppleTranslationFailure(error)
-                    }
-                )
-            )
         }
     }
 
@@ -172,49 +147,6 @@ struct LiveTranslateView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func triggerAppleTranslationIfNeeded(forceRebuild: Bool = false) {
-        guard modelManager.selectedTranslationEngine == .apple else {
-            #if canImport(Translation)
-            translationConfiguration = nil
-            #endif
-            return
-        }
-
-        guard !viewModel.pendingAppleTranslationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            #if canImport(Translation)
-            translationConfiguration = nil
-            #endif
-            return
-        }
-
-        #if canImport(Translation)
-        guard #available(iOS 17.4, *) else {
-            viewModel.handleAppleTranslationUnavailable()
-            return
-        }
-
-        if translationConfiguration == nil || forceRebuild {
-            translationConfiguration = TranslationSession.Configuration(
-                source: .init(identifier: viewModel.sourceLanguage.id),
-                target: .init(identifier: viewModel.targetLanguage.id)
-            )
-        } else {
-            translationConfiguration?.invalidate()
-        }
-        #else
-        viewModel.handleAppleTranslationUnavailable()
-        #endif
-    }
-
-    #if canImport(Translation)
-    private var appleTranslationConfigurationBinding: Binding<TranslationSession.Configuration?> {
-        $translationConfiguration
-    }
-    #else
-    private var appleTranslationConfigurationBinding: Binding<Never?> {
-        .constant(nil)
-    }
-    #endif
 }
 
 private struct LanguageMenu: View {
@@ -370,48 +302,6 @@ private struct HistorySheet: View {
             }
         }
     }
-}
-
-private struct AppleTranslationTaskModifier: ViewModifier {
-    #if canImport(Translation)
-    @Binding var configuration: TranslationSession.Configuration?
-    let sourceText: String
-    let onTranslated: (String, String) -> Void
-    let onUnavailable: () -> Void
-    let onFailure: (Error) -> Void
-
-    func body(content: Content) -> some View {
-        if #available(iOS 17.4, *) {
-            content.translationTask(configuration) { session in
-                let text = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return }
-
-                do {
-                    let response = try await session.translate(text)
-                    await MainActor.run {
-                        onTranslated(response.targetText, text)
-                    }
-                } catch {
-                    await MainActor.run {
-                        onFailure(error)
-                    }
-                }
-            }
-        } else {
-            content.onAppear(perform: onUnavailable)
-        }
-    }
-    #else
-    let configuration: Binding<Never?>
-    let sourceText: String
-    let onTranslated: (String, String) -> Void
-    let onUnavailable: () -> Void
-    let onFailure: (Error) -> Void
-
-    func body(content: Content) -> some View {
-        content.onAppear(perform: onUnavailable)
-    }
-    #endif
 }
 
 #Preview {

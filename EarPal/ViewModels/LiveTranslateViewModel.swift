@@ -23,7 +23,6 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var isShowingModelManagement = false
     @Published var history: [HistoryItem] = []
     @Published var statusMessage = ""
-    @Published var pendingAppleTranslationText = ""
 
     let languageOptions = TranslationLanguage.commonOptions
     let voiceOptions = ["Default", "Warm", "Clear"]
@@ -34,15 +33,15 @@ final class LiveTranslateViewModel: ObservableObject {
 
     init(
         modelManager: ModelManager,
-        speechRecognizer: AppleSpeechRecognizer = AppleSpeechRecognizer()
+        speechRecognizer: AppleSpeechRecognizer? = nil
     ) {
         self.modelManager = modelManager
-        self.speechRecognizer = speechRecognizer
+        self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
 
-        speechRecognizer.onText = { [weak self] text in
+        self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
         }
-        speechRecognizer.onStopped = { [weak self] in
+        self.speechRecognizer.onStopped = { [weak self] in
             self?.isListening = false
         }
     }
@@ -65,24 +64,7 @@ final class LiveTranslateViewModel: ObservableObject {
     func clearSession() {
         transcriptText = ""
         translatedText = ""
-        pendingAppleTranslationText = ""
         statusMessage = ""
-    }
-
-    func receiveAppleTranslation(_ translatedText: String, sourceText: String) {
-        guard sourceText == pendingAppleTranslationText else { return }
-        self.translatedText = translatedText
-        statusMessage = ""
-    }
-
-    func handleAppleTranslationUnavailable() {
-        translatedText = "Apple Translate requires iOS 17.4 or later."
-        statusMessage = translatedText
-    }
-
-    func handleAppleTranslationFailure(_ error: Error) {
-        translatedText = ""
-        statusMessage = error.localizedDescription
     }
 
     func refreshTranslationIfNeeded() {
@@ -146,13 +128,13 @@ final class LiveTranslateViewModel: ObservableObject {
         let sourceText = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else {
             translatedText = ""
-            pendingAppleTranslationText = ""
             return
         }
 
         switch modelManager.selectedTranslationEngine {
         case .apple:
-            pendingAppleTranslationText = sourceText
+            translatedText = "Apple Translate runtime is not wired in this build yet."
+            statusMessage = translatedText
         case .translateGemma:
             do {
                 translatedText = try await LocalInferenceRuntime(modelManager: modelManager)
