@@ -71,9 +71,13 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     private func normalizedRate(from sliderValue: Double) -> Float {
         let clamped = min(max(sliderValue, 0.2), 0.8)
         let normalized = Float((clamped - 0.2) / 0.6)
-        let minRate = AVSpeechUtteranceMinimumSpeechRate
-        let maxRate = AVSpeechUtteranceMaximumSpeechRate
-        return minRate + ((maxRate - minRate) * normalized)
+
+        // Bias the upper end so the slider's last third produces a more noticeable jump in speed.
+        let curved = pow(normalized, 0.65)
+
+        let minRate = AVSpeechUtteranceDefaultSpeechRate * 0.65
+        let maxRate = min(AVSpeechUtteranceMaximumSpeechRate, AVSpeechUtteranceDefaultSpeechRate * 1.9)
+        return minRate + ((maxRate - minRate) * curved)
     }
 
     private func resolveVoice(languageID: String, voiceIdentifier: String?) -> AVSpeechSynthesisVoice? {
@@ -89,17 +93,22 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func candidateVoices(for languageID: String) -> [AVSpeechSynthesisVoice] {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
         let normalized = languageID.lowercased()
+        let preferredLanguages = preferredVoiceLanguages(for: normalized)
+
+        let filtered = voices.filter { voice in
+            preferredLanguages.contains(voice.language.lowercased())
+        }
+        if !filtered.isEmpty {
+            return filtered.sorted { lhs, rhs in
+                voiceMatchRank(for: lhs.language.lowercased(), preferredLanguages: preferredLanguages)
+                    < voiceMatchRank(for: rhs.language.lowercased(), preferredLanguages: preferredLanguages)
+            }
+        }
+
         let prefix = normalized.split(separator: "-").first.map(String.init) ?? normalized
-
-        let exact = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.lowercased() == normalized }
-        if !exact.isEmpty {
-            return exact
-        }
-
-        let prefixMatches = AVSpeechSynthesisVoice.speechVoices().filter {
-            $0.language.lowercased().hasPrefix(prefix)
-        }
+        let prefixMatches = voices.filter { $0.language.lowercased().hasPrefix(prefix) }
         return prefixMatches
     }
 
@@ -124,12 +133,18 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
             return voice.identifier
         }
 
-        return normalized
+        let baseDisplayName = normalized
             .split(separator: " ")
             .map { word in
                 word.isEmpty ? "" : word.prefix(1).uppercased() + word.dropFirst()
             }
             .joined(separator: " ")
+
+        let localeSuffix = localeDisplaySuffix(for: voice.language)
+        if localeSuffix.isEmpty {
+            return baseDisplayName
+        }
+        return "\(baseDisplayName) (\(localeSuffix))"
     }
 
     private func qualityDescription(for voice: AVSpeechSynthesisVoice) -> String {
@@ -149,5 +164,41 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
 
     private func deactivateAudioSession() {
         audioSessionCoordinator.endSpeechPlayback()
+    }
+
+    private func preferredVoiceLanguages(for normalizedLanguageID: String) -> [String] {
+        switch normalizedLanguageID {
+        case "zh-hant":
+            return ["zh-hant", "zh-hk", "yue-hk", "zh-tw"]
+        case "zh-hans":
+            return ["zh-hans", "zh-cn", "zh-sg"]
+        default:
+            return [normalizedLanguageID]
+        }
+    }
+
+    private func voiceMatchRank(for languageID: String, preferredLanguages: [String]) -> Int {
+        preferredLanguages.firstIndex(of: languageID) ?? Int.max
+    }
+
+    private func localeDisplaySuffix(for languageID: String) -> String {
+        switch languageID.lowercased() {
+        case "yue-hk":
+            return "Cantonese, Hong Kong"
+        case "zh-hk":
+            return "Hong Kong"
+        case "zh-tw":
+            return "Taiwan"
+        case "zh-hant":
+            return "Traditional Chinese"
+        case "zh-cn":
+            return "China"
+        case "zh-sg":
+            return "Singapore"
+        case "zh-hans":
+            return "Simplified Chinese"
+        default:
+            return ""
+        }
     }
 }

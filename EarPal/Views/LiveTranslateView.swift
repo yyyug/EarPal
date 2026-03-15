@@ -111,14 +111,14 @@ struct LiveTranslateView: View {
 
     private var bottomBar: some View {
         HStack(spacing: 12) {
+            primaryAction
+
+            Spacer()
+
             Button("Settings") {
                 viewModel.isShowingAudioOptions = true
             }
             .buttonStyle(.bordered)
-
-            Spacer()
-
-            primaryAction
         }
         .padding(.horizontal, 20)
         .padding(.top, 10)
