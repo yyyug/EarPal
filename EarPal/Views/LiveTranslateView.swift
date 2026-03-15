@@ -9,7 +9,6 @@ struct LiveTranslateView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     languageBar
-                    engineSummary
                     transcriptCard
                     translationCard
                 }
@@ -73,14 +72,6 @@ struct LiveTranslateView: View {
                 options: viewModel.languageOptions
             )
         }
-    }
-
-    private var engineSummary: some View {
-        HStack(spacing: 12) {
-            EngineBadge(title: "ASR", value: modelManager.selectedASREngine.displayName)
-            EngineBadge(title: "Translate", value: modelManager.selectedTranslationEngine.displayName)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var transcriptCard: some View {
@@ -204,24 +195,6 @@ private struct LanguageMenu: View {
             .frame(maxWidth: .infinity, minHeight: 70)
             .background(Color.white.opacity(0.88), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
-    }
-}
-
-private struct EngineBadge: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(Color.white.opacity(0.8), in: Capsule())
     }
 }
 
