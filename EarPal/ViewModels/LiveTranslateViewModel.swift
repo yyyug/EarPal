@@ -66,13 +66,13 @@ final class LiveTranslateViewModel: ObservableObject {
         speechRecognizer: AppleSpeechRecognizer? = nil,
         audioRecorder: AudioCaptureRecorder? = nil,
         localASRService: LocalASRService = LocalASRService(),
-        speechPlaybackService: AppleSpeechPlaybackService = AppleSpeechPlaybackService()
+        speechPlaybackService: AppleSpeechPlaybackService? = nil
     ) {
         self.modelManager = modelManager
         self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
         self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
         self.localASRService = localASRService
-        self.speechPlaybackService = speechPlaybackService
+        self.speechPlaybackService = speechPlaybackService ?? AppleSpeechPlaybackService()
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
