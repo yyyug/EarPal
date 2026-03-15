@@ -26,6 +26,7 @@
 		B10000010000000000000011 /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000003 /* AudioCommon */; };
 		B10000010000000000000012 /* SpeechVAD in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000004 /* SpeechVAD */; };
 		B10000010000000000000013 /* TranslateGemmaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000016 /* TranslateGemmaService.swift */; };
+		B10000010000000000000014 /* AppleSpeechPlaybackService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000017 /* AppleSpeechPlaybackService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 		B10001010000000000000014 /* AudioCaptureRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureRecorder.swift; sourceTree = "<group>"; };
 		B10001010000000000000015 /* LocalASRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalASRService.swift; sourceTree = "<group>"; };
 		B10001010000000000000016 /* TranslateGemmaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslateGemmaService.swift; sourceTree = "<group>"; };
+		B10001010000000000000017 /* AppleSpeechPlaybackService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechPlaybackService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -130,6 +132,7 @@
 				B10001010000000000000011 /* LocalInferenceRuntime.swift */,
 				B10001010000000000000015 /* LocalASRService.swift */,
 				B10001010000000000000016 /* TranslateGemmaService.swift */,
+				B10001010000000000000017 /* AppleSpeechPlaybackService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -222,6 +225,7 @@
 				B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */,
 				B1000001000000000000000E /* LocalASRService.swift in Sources */,
 				B10000010000000000000013 /* TranslateGemmaService.swift in Sources */,
+				B10000010000000000000014 /* AppleSpeechPlaybackService.swift in Sources */,
 				B10000010000000000000004 /* LiveTranslateViewModel.swift in Sources */,
 				B10000010000000000000005 /* LiveTranslateView.swift in Sources */,
 				B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */,

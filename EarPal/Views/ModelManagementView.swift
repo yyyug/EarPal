@@ -7,43 +7,8 @@ struct ModelManagementView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Speech Recognition") {
-                    Picker("ASR Engine", selection: asrSelection) {
-                        ForEach(ASREngine.allCases) { engine in
-                            Text(asrLabel(for: engine))
-                                .tag(engine)
-                        }
-                    }
-                    .pickerStyle(.navigationLink)
-
-                    ForEach(modelManager.asrModels) { model in
-                        ModelRow(
-                            model: model,
-                            isSelected: model.engineID == modelManager.selectedASREngine.rawValue,
-                            onDownload: { modelManager.downloadModel(id: model.id) },
-                            onDelete: { modelManager.deleteModel(id: model.id) }
-                        )
-                    }
-                }
-
-                Section("Translation") {
-                    Picker("Translation Engine", selection: translationSelection) {
-                        ForEach(TranslationEngine.allCases) { engine in
-                            Text(translationLabel(for: engine))
-                                .tag(engine)
-                        }
-                    }
-                    .pickerStyle(.navigationLink)
-
-                    ForEach(modelManager.translationModels) { model in
-                        ModelRow(
-                            model: model,
-                            isSelected: model.engineID == modelManager.selectedTranslationEngine.rawValue,
-                            onDownload: { modelManager.downloadModel(id: model.id) },
-                            onDelete: { modelManager.deleteModel(id: model.id) }
-                        )
-                    }
-                }
+                ModelSettingsSections()
+                    .environmentObject(modelManager)
             }
             .navigationTitle("Models & Engines")
             .toolbar {
@@ -55,6 +20,11 @@ struct ModelManagementView: View {
             }
         }
     }
+
+}
+
+struct ModelSettingsSections: View {
+    @EnvironmentObject private var modelManager: ModelManager
 
     private var asrSelection: Binding<ASREngine> {
         Binding(
@@ -68,6 +38,55 @@ struct ModelManagementView: View {
             get: { modelManager.selectedTranslationEngine },
             set: { modelManager.select(translation: $0) }
         )
+    }
+
+    var body: some View {
+        speechRecognitionSection
+        translationSection
+    }
+
+    @ViewBuilder
+    private var speechRecognitionSection: some View {
+        Section("Speech Recognition") {
+            Picker("ASR Engine", selection: asrSelection) {
+                ForEach(ASREngine.allCases) { engine in
+                    Text(asrLabel(for: engine))
+                        .tag(engine)
+                }
+            }
+            .pickerStyle(.navigationLink)
+
+            ForEach(modelManager.asrModels) { model in
+                ModelRow(
+                    model: model,
+                    isSelected: model.engineID == modelManager.selectedASREngine.rawValue,
+                    onDownload: { modelManager.downloadModel(id: model.id) },
+                    onDelete: { modelManager.deleteModel(id: model.id) }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var translationSection: some View {
+        Section("Translation") {
+            Picker("Translation Engine", selection: translationSelection) {
+                ForEach(TranslationEngine.allCases) { engine in
+                    Text(translationLabel(for: engine))
+                        .tag(engine)
+                }
+            }
+            .pickerStyle(.navigationLink)
+
+            ForEach(modelManager.translationModels) { model in
+                ModelRow(
+                    model: model,
+                    isSelected: model.engineID == modelManager.selectedTranslationEngine.rawValue,
+                    onDownload: { modelManager.downloadModel(id: model.id) },
+                    onDelete: { modelManager.deleteModel(id: model.id) }
+                )
+            }
+        }
     }
 
     private func asrLabel(for engine: ASREngine) -> String {
@@ -89,17 +108,8 @@ private struct ModelRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(model.displayName)
-                            .font(.headline)
-                        if isSelected {
-                            Text("Selected")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.black.opacity(0.08), in: Capsule())
-                        }
-                    }
+                    Text(model.displayName)
+                        .font(.headline)
 
                     Text(model.sizeDescription)
                         .font(.subheadline)
@@ -108,13 +118,9 @@ private struct ModelRow: View {
 
                 Spacer()
 
-                if model.isBuiltIn {
-                    Text("Built in")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else if model.isInstalled {
+                if model.isInstalled && !model.isBuiltIn {
                     Button("Delete", role: .destructive, action: onDelete)
-                } else {
+                } else if !model.isBuiltIn {
                     Button(model.isDownloading ? "Downloading" : "Download", action: onDownload)
                         .disabled(model.isDownloading)
                 }
@@ -129,6 +135,43 @@ private struct ModelRow: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(accessibilityHint)
+    }
+
+    private var accessibilityLabel: String {
+        model.displayName
+    }
+
+    private var accessibilityValue: String {
+        var values: [String] = []
+
+        if isSelected {
+            values.append("Selected")
+        }
+
+        values.append(model.sizeDescription)
+
+        if !model.statusNote.isEmpty, model.statusNote != model.sizeDescription {
+            values.append(model.statusNote)
+        }
+
+        return values.joined(separator: ", ")
+    }
+
+    private var accessibilityHint: String {
+        if model.isBuiltIn {
+            return ""
+        }
+        if model.isInstalled {
+            return "Double tap to delete this model."
+        }
+        if model.isDownloading {
+            return "Model download in progress."
+        }
+        return "Double tap to download this model."
     }
 }
 

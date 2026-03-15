@@ -5,9 +5,17 @@ import Foundation
 final class LiveTranslateViewModel: ObservableObject {
     struct AppleTranslationRequest: Equatable {
         let id = UUID()
+        let generation: Int
         let text: String
         let sourceLanguageID: String
         let targetLanguageID: String
+    }
+
+    enum TranslationStatus: Equatable {
+        case idle
+        case waitingForStableInput
+        case translating
+        case failed(String)
     }
 
     struct HistoryItem: Identifiable {
@@ -30,6 +38,7 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var isShowingModelManagement = false
     @Published var history: [HistoryItem] = []
     @Published var statusMessage = ""
+    @Published var translationStatus: TranslationStatus = .idle
     @Published var appleTranslationRequest: AppleTranslationRequest?
 
     let languageOptions = TranslationLanguage.commonOptions
@@ -39,19 +48,31 @@ final class LiveTranslateViewModel: ObservableObject {
     private let speechRecognizer: AppleSpeechRecognizer
     private let audioRecorder: AudioCaptureRecorder
     private let localASRService: LocalASRService
+    private let speechPlaybackService: AppleSpeechPlaybackService
     private var localStreamingSession: LocalASRStreamingSession?
-    private var translationTask: Task<Void, Never>?
+    private var translationDebounceTask: Task<Void, Never>?
+    private var activeTranslationTask: Task<Void, Never>?
+    private var translationGeneration = 0
+    private var pendingTranscriptText = ""
+    private var lastCommittedTranscriptText = ""
+    private var lastTranslatedTranscriptText = ""
+    private var lastTranslatedSourceLanguageID = ""
+    private var lastTranslatedTargetLanguageID = ""
+    private var lastTranslatedEngineID = ""
+    private var lastTranscriptChangeAt = Date.distantPast
 
     init(
         modelManager: ModelManager,
         speechRecognizer: AppleSpeechRecognizer? = nil,
         audioRecorder: AudioCaptureRecorder? = nil,
-        localASRService: LocalASRService = LocalASRService()
+        localASRService: LocalASRService = LocalASRService(),
+        speechPlaybackService: AppleSpeechPlaybackService = AppleSpeechPlaybackService()
     ) {
         self.modelManager = modelManager
         self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
         self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
         self.localASRService = localASRService
+        self.speechPlaybackService = speechPlaybackService
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
@@ -82,37 +103,62 @@ final class LiveTranslateViewModel: ObservableObject {
         Task {
             await session?.cancel()
         }
+        cancelTranslationWork(clearAppleRequest: true)
+        speechPlaybackService.stopSpeaking()
         transcriptText = ""
         translatedText = ""
         statusMessage = ""
-        appleTranslationRequest = nil
+        translationStatus = .idle
+        pendingTranscriptText = ""
+        lastCommittedTranscriptText = ""
+        lastTranslatedTranscriptText = ""
+        lastTranslatedSourceLanguageID = ""
+        lastTranslatedTargetLanguageID = ""
+        lastTranslatedEngineID = ""
     }
 
     func receiveAppleTranslation(_ translatedText: String, for request: AppleTranslationRequest) {
-        guard appleTranslationRequest == request else { return }
-        self.translatedText = translatedText
-        self.statusMessage = ""
-        storeHistoryIfPossible()
+        guard request.generation == translationGeneration else { return }
+        commitTranslation(translatedText, generation: request.generation)
     }
 
     func failAppleTranslation(_ error: Error, for request: AppleTranslationRequest) {
-        guard appleTranslationRequest == request else { return }
-        translatedText = ""
-        statusMessage = error.localizedDescription
+        guard request.generation == translationGeneration else { return }
+        appleTranslationRequest = nil
+        translationStatus = .failed(error.localizedDescription)
     }
 
     func appleTranslationUnavailable(for request: AppleTranslationRequest) {
-        guard appleTranslationRequest == request else { return }
-        translatedText = ""
-        statusMessage = "Apple Translate requires iOS 18.0 or later."
+        guard request.generation == translationGeneration else { return }
+        appleTranslationRequest = nil
+        translationStatus = .failed("Apple Translate requires iOS 18.0 or later.")
     }
 
     func refreshTranslationIfNeeded() {
-        guard !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        translationTask?.cancel()
-        translationTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            await self?.translateCurrentTranscript()
+        let normalizedTranscript = normalizeTranscript(transcriptText)
+        pendingTranscriptText = normalizedTranscript
+        lastTranscriptChangeAt = .now
+
+        guard !normalizedTranscript.isEmpty else {
+            cancelTranslationWork(clearAppleRequest: true)
+            translationStatus = .idle
+            return
+        }
+
+        let shouldTreatAsStable = !isListening || modelManager.selectedASREngine != .apple
+        scheduleTranslationEvaluation(stable: shouldTreatAsStable)
+    }
+
+    var translationStatusMessage: String {
+        switch translationStatus {
+        case .idle:
+            return ""
+        case .waitingForStableInput:
+            return "Waiting for stable speech..."
+        case .translating:
+            return "Translating..."
+        case .failed(let message):
+            return message
         }
     }
 
@@ -202,6 +248,9 @@ final class LiveTranslateViewModel: ObservableObject {
 
         speechRecognizer.stopRecognition()
         isListening = false
+        if !pendingTranscriptText.isEmpty {
+            scheduleTranslationEvaluation(stable: true)
+        }
 
         if !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            !translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -218,47 +267,155 @@ final class LiveTranslateViewModel: ObservableObject {
 
     private func handleRecognizedText(_ text: String) {
         transcriptText = text
-        refreshTranslationIfNeeded()
+        pendingTranscriptText = normalizeTranscript(text)
+        lastTranscriptChangeAt = .now
+        scheduleTranslationEvaluation(stable: false)
     }
 
     private func handleLocalTranscriptUpdate(_ update: LocalASRTranscriptUpdate) {
         transcriptText = update.text
         statusMessage = update.statusMessage
-        refreshTranslationIfNeeded()
+        pendingTranscriptText = normalizeTranscript(update.text)
+        lastTranscriptChangeAt = .now
+        if update.isFinal {
+            scheduleTranslationEvaluation(stable: true)
+        } else {
+            translationDebounceTask?.cancel()
+            translationStatus = pendingTranscriptText.isEmpty ? .idle : .waitingForStableInput
+        }
     }
 
-    private func translateCurrentTranscript() async {
-        let sourceText = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func scheduleTranslationEvaluation(stable: Bool) {
+        translationDebounceTask?.cancel()
+
+        let sourceText = normalizeTranscript(pendingTranscriptText)
         guard !sourceText.isEmpty else {
-            translatedText = ""
-            appleTranslationRequest = nil
+            translationStatus = .idle
             return
         }
 
+        if stable {
+            translationStatus = .idle
+            beginTranslation(for: sourceText)
+            return
+        }
+
+        translationStatus = .waitingForStableInput
+        translationDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            await self?.confirmStableAndTranslate(candidateText: sourceText)
+        }
+    }
+
+    private func confirmStableAndTranslate(candidateText: String) {
+        guard candidateText == normalizeTranscript(pendingTranscriptText) else { return }
+        guard Date.now.timeIntervalSince(lastTranscriptChangeAt) >= 0.7 else { return }
+        beginTranslation(for: candidateText)
+    }
+
+    private func beginTranslation(for sourceText: String) {
+        let normalized = normalizeTranscript(sourceText)
+        guard !normalized.isEmpty else { return }
+        guard shouldTranslate(normalized) else {
+            translationStatus = .idle
+            return
+        }
+
+        translationDebounceTask?.cancel()
+        activeTranslationTask?.cancel()
+        appleTranslationRequest = nil
+        translationGeneration += 1
+        let generation = translationGeneration
+        lastCommittedTranscriptText = normalized
+        translationStatus = .translating
+
         switch modelManager.selectedTranslationEngine {
         case .apple:
-            statusMessage = "Translating..."
             appleTranslationRequest = AppleTranslationRequest(
-                text: sourceText,
+                generation: generation,
+                text: normalized,
                 sourceLanguageID: sourceLanguage.id,
                 targetLanguageID: targetLanguage.id
             )
         case .translateGemma:
-            appleTranslationRequest = nil
-            do {
-                translatedText = try await LocalInferenceRuntime(modelManager: modelManager)
-                    .translateWithTranslateGemma(
-                        text: sourceText,
-                        sourceLanguage: sourceLanguage,
-                        targetLanguage: targetLanguage
-                    )
-                statusMessage = ""
-                storeHistoryIfPossible()
-            } catch {
-                translatedText = ""
-                statusMessage = error.localizedDescription
+            activeTranslationTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let translatedText = try await LocalInferenceRuntime(modelManager: self.modelManager)
+                        .translateWithTranslateGemma(
+                            text: normalized,
+                            sourceLanguage: self.sourceLanguage,
+                            targetLanguage: self.targetLanguage
+                        )
+                    await MainActor.run {
+                        self.commitTranslation(translatedText, generation: generation)
+                    }
+                } catch is CancellationError {
+                } catch {
+                    await MainActor.run {
+                        guard generation == self.translationGeneration else { return }
+                        self.translationStatus = .failed(error.localizedDescription)
+                    }
+                }
             }
         }
+    }
+
+    private func commitTranslation(_ translatedText: String, generation: Int) {
+        guard generation == translationGeneration else { return }
+
+        let normalizedTranslation = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTranslation.isEmpty else {
+            translationStatus = .failed("Translation returned no text.")
+            return
+        }
+
+        appleTranslationRequest = nil
+        activeTranslationTask = nil
+        self.translatedText = normalizedTranslation
+        lastTranslatedTranscriptText = normalizeTranscript(lastCommittedTranscriptText)
+        lastTranslatedSourceLanguageID = sourceLanguage.id
+        lastTranslatedTargetLanguageID = targetLanguage.id
+        lastTranslatedEngineID = modelManager.selectedTranslationEngine.rawValue
+        translationStatus = .idle
+        storeHistoryIfPossible()
+
+        if autoSpeak {
+            speechPlaybackService.speak(
+                text: normalizedTranslation,
+                languageID: targetLanguage.id,
+                speechRate: speechRate,
+                voiceLabel: selectedVoiceLabel
+            )
+        }
+    }
+
+    private func cancelTranslationWork(clearAppleRequest: Bool) {
+        translationDebounceTask?.cancel()
+        translationDebounceTask = nil
+        activeTranslationTask?.cancel()
+        activeTranslationTask = nil
+        translationGeneration += 1
+        if clearAppleRequest {
+            appleTranslationRequest = nil
+        }
+    }
+
+    private func normalizeTranscript(_ text: String) -> String {
+        text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func shouldTranslate(_ normalizedTranscript: String) -> Bool {
+        guard normalizedTranscript != lastTranslatedTranscriptText else {
+            return sourceLanguage.id != lastTranslatedSourceLanguageID
+                || targetLanguage.id != lastTranslatedTargetLanguageID
+                || modelManager.selectedTranslationEngine.rawValue != lastTranslatedEngineID
+        }
+
+        return true
     }
 
     private func storeHistoryIfPossible() {

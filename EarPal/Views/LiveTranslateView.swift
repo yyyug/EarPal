@@ -26,16 +26,13 @@ struct LiveTranslateView: View {
                 .ignoresSafeArea()
             )
             .navigationTitle("EarPal")
-            .sheet(isPresented: $viewModel.isShowingAudioOptions) {
-                AudioOptionsSheet()
-                    .environmentObject(viewModel)
-            }
             .sheet(isPresented: $viewModel.isShowingHistory) {
                 HistorySheet()
                     .environmentObject(viewModel)
             }
-            .sheet(isPresented: $viewModel.isShowingModelManagement) {
-                ModelManagementView()
+            .sheet(isPresented: settingsPresented) {
+                SettingsSheet()
+                    .environmentObject(viewModel)
                     .environmentObject(modelManager)
             }
             .overlay(alignment: .topLeading) {
@@ -96,7 +93,7 @@ struct LiveTranslateView: View {
         ContentCard(
             title: "Translation",
             bodyText: viewModel.translatedText,
-            placeholder: viewModel.statusMessage.isEmpty ? "Translated speech will appear here." : viewModel.statusMessage
+            placeholder: viewModel.translationStatusMessage.isEmpty ? "Translated speech will appear here." : viewModel.translationStatusMessage
         )
     }
 
@@ -125,20 +122,8 @@ struct LiveTranslateView: View {
 
     private var utilityRow: some View {
         HStack(spacing: 12) {
-            Toggle(isOn: $viewModel.autoSpeak) {
-                Text("Auto Speak")
-                    .font(.headline)
-            }
-            .toggleStyle(.button)
-            .buttonStyle(.bordered)
-
-            Button("Audio Options") {
+            Button("Settings") {
                 viewModel.isShowingAudioOptions = true
-            }
-            .buttonStyle(.bordered)
-
-            Button("Models") {
-                viewModel.isShowingModelManagement = true
             }
             .buttonStyle(.bordered)
 
@@ -148,6 +133,16 @@ struct LiveTranslateView: View {
             .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var settingsPresented: Binding<Bool> {
+        Binding(
+            get: { viewModel.isShowingAudioOptions || viewModel.isShowingModelManagement },
+            set: { isPresented in
+                viewModel.isShowingAudioOptions = isPresented
+                viewModel.isShowingModelManagement = isPresented
+            }
+        )
     }
 
     @ViewBuilder
@@ -250,14 +245,23 @@ private struct ContentCard: View {
     }
 }
 
-private struct AudioOptionsSheet: View {
+private struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var viewModel: LiveTranslateViewModel
+    @EnvironmentObject private var modelManager: ModelManager
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            List {
+                Section("Speech Output") {
+                    Toggle("Auto Speak", isOn: $viewModel.autoSpeak)
+
+                    Picker("Voice", selection: $viewModel.selectedVoiceLabel) {
+                        ForEach(viewModel.voiceOptions, id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Speech Speed")
                         Slider(value: $viewModel.speechRate, in: 0.2...0.8, step: 0.05)
@@ -267,17 +271,10 @@ private struct AudioOptionsSheet: View {
                     }
                 }
 
-                Section {
-                    Picker("Voice", selection: $viewModel.selectedVoiceLabel) {
-                        ForEach(viewModel.voiceOptions, id: \.self) { option in
-                            Text(option).tag(option)
-                        }
-                    }
-
-                    Toggle("Auto Speak", isOn: $viewModel.autoSpeak)
-                }
+                ModelSettingsSections()
+                    .environmentObject(modelManager)
             }
-            .navigationTitle("Audio Options")
+            .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
