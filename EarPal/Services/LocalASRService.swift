@@ -65,7 +65,7 @@ struct LocalASRService {
 }
 
 actor LocalASRStreamingSession {
-    private enum EngineRuntime {
+    enum EngineRuntime {
         case parakeet(ParakeetASRModel)
         case qwen3(Qwen3ASRModel)
 
@@ -100,7 +100,7 @@ actor LocalASRStreamingSession {
     private var lastPartialTime: Float = 0
     private var isClosed = false
 
-    init(
+    fileprivate init(
         engine: EngineRuntime,
         vadModel: SileroVADModel,
         transcriptHandler: @escaping @Sendable (LocalASRTranscriptUpdate) -> Void
