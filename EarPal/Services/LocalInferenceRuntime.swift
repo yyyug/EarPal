@@ -25,12 +25,4 @@ struct LocalInferenceRuntime {
 
         throw LocalInferenceRuntimeError.runtimeNotIntegrated(TranslationEngine.translateGemma.displayName)
     }
-
-    func startStreamingASR(engine: ASREngine) throws {
-        guard modelManager.canUse(engine) else {
-            throw LocalInferenceRuntimeError.modelNotInstalled(engine.displayName)
-        }
-
-        throw LocalInferenceRuntimeError.runtimeNotIntegrated(engine.displayName)
-    }
 }

@@ -19,6 +19,11 @@
 		B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000011 /* LocalInferenceRuntime.swift */; };
 		B1000001000000000000000B /* ModelManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000012 /* ModelManagementView.swift */; };
 		B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000013 /* AppleTranslationBridge.swift */; };
+		B1000001000000000000000D /* AudioCaptureRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000014 /* AudioCaptureRecorder.swift */; };
+		B1000001000000000000000E /* LocalASRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000015 /* LocalASRService.swift */; };
+		B1000001000000000000000F /* ParakeetASR in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000001 /* ParakeetASR */; };
+		B10000010000000000000010 /* Qwen3ASR in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000002 /* Qwen3ASR */; };
+		B10000010000000000000011 /* AudioCommon in Frameworks */ = {isa = PBXBuildFile; productRef = B10009000000000000000003 /* AudioCommon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +41,8 @@
 		B10001010000000000000011 /* LocalInferenceRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalInferenceRuntime.swift; sourceTree = "<group>"; };
 		B10001010000000000000012 /* ModelManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManagementView.swift; sourceTree = "<group>"; };
 		B10001010000000000000013 /* AppleTranslationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleTranslationBridge.swift; sourceTree = "<group>"; };
+		B10001010000000000000014 /* AudioCaptureRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureRecorder.swift; sourceTree = "<group>"; };
+		B10001010000000000000015 /* LocalASRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalASRService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,6 +50,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B10000010000000000000011 /* AudioCommon in Frameworks */,
+				B1000001000000000000000F /* ParakeetASR in Frameworks */,
+				B10000010000000000000010 /* Qwen3ASR in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,7 +122,9 @@
 			children = (
 				B10001010000000000000009 /* ModelManager.swift */,
 				B10001010000000000000010 /* AppleSpeechRecognizer.swift */,
+				B10001010000000000000014 /* AudioCaptureRecorder.swift */,
 				B10001010000000000000011 /* LocalInferenceRuntime.swift */,
+				B10001010000000000000015 /* LocalASRService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -133,6 +145,11 @@
 			dependencies = (
 			);
 			name = EarPal;
+			packageProductDependencies = (
+				B10009000000000000000001 /* ParakeetASR */,
+				B10009000000000000000002 /* Qwen3ASR */,
+				B10009000000000000000003 /* AudioCommon */,
+			);
 			productName = EarPal;
 			productReference = B10001000000000000000001 /* EarPal.app */;
 			productType = "com.apple.product-type.application";
@@ -161,6 +178,9 @@
 				Base,
 			);
 			mainGroup = B10003000000000000000001;
+			packageReferences = (
+				B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */,
+			);
 			productRefGroup = B10003000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -192,7 +212,9 @@
 				B10000010000000000000007 /* InferenceModel.swift in Sources */,
 				B10000010000000000000008 /* ModelManager.swift in Sources */,
 				B10000010000000000000009 /* AppleSpeechRecognizer.swift in Sources */,
+				B1000001000000000000000D /* AudioCaptureRecorder.swift in Sources */,
 				B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */,
+				B1000001000000000000000E /* LocalASRService.swift in Sources */,
 				B10000010000000000000004 /* LiveTranslateViewModel.swift in Sources */,
 				B10000010000000000000005 /* LiveTranslateView.swift in Sources */,
 				B1000001000000000000000C /* AppleTranslationBridge.swift in Sources */,
@@ -201,6 +223,35 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/soniqo/speech-swift.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B10009000000000000000001 /* ParakeetASR */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = ParakeetASR;
+		};
+		B10009000000000000000002 /* Qwen3ASR */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = Qwen3ASR;
+		};
+		B10009000000000000000003 /* AudioCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10008000000000000000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = AudioCommon;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B10006000000000000000001 /* Debug */ = {

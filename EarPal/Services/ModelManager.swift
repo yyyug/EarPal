@@ -1,8 +1,14 @@
+import AudioCommon
 import Combine
 import Foundation
+import ParakeetASR
+import Qwen3ASR
 
 @MainActor
 final class ModelManager: ObservableObject {
+    static let parakeetModelID = ParakeetASRModel.defaultModelId
+    static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
+
     @Published private(set) var models: [InferenceModel]
     @Published var selectedASREngine: ASREngine
     @Published var selectedTranslationEngine: TranslationEngine
@@ -15,7 +21,151 @@ final class ModelManager: ObservableObject {
 
     init() {
         let installedIDs = Set(defaults.stringArray(forKey: installedModelsKey) ?? [])
-        let initialModels = [
+        let initialModels = Self.makeInitialModels(
+            installedIDs: installedIDs,
+            fileManager: FileManager.default
+        )
+        models = initialModels
+
+        let storedASR = ASREngine(rawValue: defaults.string(forKey: selectedASRKey) ?? "") ?? .apple
+        selectedASREngine = Self.resolveASREngine(storedASR, with: initialModels)
+
+        let storedTranslation = TranslationEngine(rawValue: defaults.string(forKey: selectedTranslationKey) ?? "") ?? .apple
+        selectedTranslationEngine = Self.resolveTranslationEngine(storedTranslation, with: initialModels)
+    }
+
+    var asrModels: [InferenceModel] {
+        models.filter { $0.task == .asr }
+    }
+
+    var translationModels: [InferenceModel] {
+        models.filter { $0.task == .translation }
+    }
+
+    func canUse(_ engine: ASREngine) -> Bool {
+        if engine == .apple { return true }
+        return models.contains(where: { $0.engineID == engine.rawValue && $0.isInstalled })
+    }
+
+    func canUse(_ engine: TranslationEngine) -> Bool {
+        if engine == .apple { return true }
+        return models.contains(where: { $0.engineID == engine.rawValue && $0.isInstalled })
+    }
+
+    func select(asr engine: ASREngine) {
+        let resolved = Self.resolveASREngine(engine, with: models)
+        selectedASREngine = resolved
+        defaults.set(resolved.rawValue, forKey: selectedASRKey)
+    }
+
+    func select(translation engine: TranslationEngine) {
+        let resolved = Self.resolveTranslationEngine(engine, with: models)
+        selectedTranslationEngine = resolved
+        defaults.set(resolved.rawValue, forKey: selectedTranslationKey)
+    }
+
+    func downloadModel(id: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        guard !models[index].isBuiltIn, !models[index].isInstalled, !models[index].isDownloading else { return }
+
+        models[index].isDownloading = true
+        models[index].downloadProgress = 0
+        models[index].statusNote = "Preparing download..."
+
+        let modelID = id
+        Task {
+            do {
+                switch modelID {
+                case "parakeet-asr":
+                    let model = try await ParakeetASRModel.fromPretrained(modelId: Self.parakeetModelID) { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
+                    model.unload()
+                    await MainActor.run {
+                        self.markInstalled(id: modelID, note: "Parakeet downloaded to local cache.")
+                    }
+                case "qwen3-asr":
+                    let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
+                    model.unload()
+                    await MainActor.run {
+                        self.markInstalled(id: modelID, note: "Qwen3-ASR downloaded to local cache.")
+                    }
+                case "translate-gemma":
+                    try installMarker(for: models[index])
+                    markInstalled(id: modelID, note: "Placeholder install saved in app storage.")
+                default:
+                    break
+                }
+            } catch {
+                await MainActor.run {
+                    self.markDownloadFailed(id: modelID, note: "Install failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func deleteModel(id: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        guard !models[index].isBuiltIn, models[index].isInstalled else { return }
+
+        do {
+            switch id {
+            case "parakeet-asr":
+                try removeCachedModel(modelID: Self.parakeetModelID)
+            case "qwen3-asr":
+                try removeCachedModel(modelID: Self.qwen3ASRModelID)
+            case "translate-gemma":
+                try deleteMarker(for: models[index])
+            default:
+                break
+            }
+
+            let deletedModel = models[index]
+            models[index].isInstalled = false
+            models[index].isDownloading = false
+            models[index].downloadProgress = 0
+            models[index].statusNote = "Removed from device."
+            persistInstalledModels()
+            resetSelectionsIfNeeded(deletedModel: deletedModel)
+        } catch {
+            models[index].statusNote = "Delete failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func updateDownloadState(id: String, progress: Double, note: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        models[index].downloadProgress = progress
+        models[index].statusNote = note
+    }
+
+    private func markInstalled(id: String, note: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        models[index].isInstalled = true
+        models[index].isDownloading = false
+        models[index].downloadProgress = 1
+        models[index].statusNote = note
+        persistInstalledModels()
+    }
+
+    private func markDownloadFailed(id: String, note: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        models[index].isDownloading = false
+        models[index].downloadProgress = 0
+        models[index].statusNote = note
+    }
+
+    private static func makeInitialModels(installedIDs: Set<String>, fileManager: FileManager) -> [InferenceModel] {
+        let parakeetInstalled = isParakeetInstalled(fileManager: fileManager)
+        let qwenInstalled = isQwenInstalled(fileManager: fileManager)
+        let translateGemmaInstalled = installedIDs.contains("translate-gemma")
+
+        return [
             InferenceModel(
                 id: "apple-speech",
                 displayName: "Apple Speech",
@@ -39,10 +189,10 @@ final class ModelManager: ObservableObject {
                 sizeDescription: "~1.5 GB",
                 downloadURL: nil,
                 isBuiltIn: false,
-                isInstalled: installedIDs.contains("parakeet-asr"),
+                isInstalled: parakeetInstalled,
                 isDownloading: false,
-                downloadProgress: installedIDs.contains("parakeet-asr") ? 1 : 0,
-                statusNote: "Download configured in app storage. Runtime wiring is pending."
+                downloadProgress: parakeetInstalled ? 1 : 0,
+                statusNote: parakeetInstalled ? "Ready for offline transcription." : "Downloads CoreML weights for on-device ASR."
             ),
             InferenceModel(
                 id: "qwen3-asr",
@@ -50,13 +200,13 @@ final class ModelManager: ObservableObject {
                 task: .asr,
                 engineID: ASREngine.qwen3.rawValue,
                 supportsLanguages: TranslationLanguage.commonOptions.map(\.id),
-                sizeDescription: "~2.0 GB",
+                sizeDescription: "~0.4 GB",
                 downloadURL: nil,
                 isBuiltIn: false,
-                isInstalled: installedIDs.contains("qwen3-asr"),
+                isInstalled: qwenInstalled,
                 isDownloading: false,
-                downloadProgress: installedIDs.contains("qwen3-asr") ? 1 : 0,
-                statusNote: "Download configured in app storage. Runtime wiring is pending."
+                downloadProgress: qwenInstalled ? 1 : 0,
+                statusNote: qwenInstalled ? "Ready for offline transcription." : "Downloads MLX weights for on-device ASR."
             ),
             InferenceModel(
                 id: "apple-translate",
@@ -81,99 +231,30 @@ final class ModelManager: ObservableObject {
                 sizeDescription: "~1.2 GB",
                 downloadURL: nil,
                 isBuiltIn: false,
-                isInstalled: installedIDs.contains("translate-gemma"),
+                isInstalled: translateGemmaInstalled,
                 isDownloading: false,
-                downloadProgress: installedIDs.contains("translate-gemma") ? 1 : 0,
-                statusNote: "Download configured in app storage. Runtime wiring is pending."
+                downloadProgress: translateGemmaInstalled ? 1 : 0,
+                statusNote: "Download lifecycle is wired. Runtime is still pending."
             )
         ]
-        models = initialModels
-
-        let storedASR = ASREngine(rawValue: defaults.string(forKey: selectedASRKey) ?? "") ?? .apple
-        selectedASREngine = ModelManager.resolveASREngine(storedASR, with: initialModels)
-
-        let storedTranslation = TranslationEngine(rawValue: defaults.string(forKey: selectedTranslationKey) ?? "") ?? .apple
-        selectedTranslationEngine = ModelManager.resolveTranslationEngine(storedTranslation, with: initialModels)
     }
 
-    var asrModels: [InferenceModel] {
-        models.filter { $0.task == .asr }
-    }
-
-    var translationModels: [InferenceModel] {
-        models.filter { $0.task == .translation }
-    }
-
-    func canUse(_ engine: ASREngine) -> Bool {
-        if engine == .apple { return true }
-        return models.contains(where: { $0.engineID == engine.rawValue && $0.isInstalled })
-    }
-
-    func canUse(_ engine: TranslationEngine) -> Bool {
-        if engine == .apple { return true }
-        return models.contains(where: { $0.engineID == engine.rawValue && $0.isInstalled })
-    }
-
-    func select(asr engine: ASREngine) {
-        let resolved = ModelManager.resolveASREngine(engine, with: models)
-        selectedASREngine = resolved
-        defaults.set(resolved.rawValue, forKey: selectedASRKey)
-    }
-
-    func select(translation engine: TranslationEngine) {
-        let resolved = ModelManager.resolveTranslationEngine(engine, with: models)
-        selectedTranslationEngine = resolved
-        defaults.set(resolved.rawValue, forKey: selectedTranslationKey)
-    }
-
-    func downloadModel(id: String) {
-        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
-        guard !models[index].isBuiltIn, !models[index].isInstalled, !models[index].isDownloading else { return }
-
-        models[index].isDownloading = true
-        models[index].downloadProgress = 0
-        models[index].statusNote = "Preparing app storage..."
-
-        Task {
-            for step in 1...10 {
-                try? await Task.sleep(for: .milliseconds(180))
-                guard let liveIndex = self.models.firstIndex(where: { $0.id == id }) else { return }
-                self.models[liveIndex].downloadProgress = Double(step) / 10
-                self.models[liveIndex].statusNote = "Downloading..."
-            }
-
-            guard let liveIndex = self.models.firstIndex(where: { $0.id == id }) else { return }
-            do {
-                try self.installMarker(for: self.models[liveIndex])
-                self.models[liveIndex].isInstalled = true
-                self.models[liveIndex].isDownloading = false
-                self.models[liveIndex].downloadProgress = 1
-                self.models[liveIndex].statusNote = "Installed in app storage."
-                self.persistInstalledModels()
-            } catch {
-                self.models[liveIndex].isDownloading = false
-                self.models[liveIndex].downloadProgress = 0
-                self.models[liveIndex].statusNote = "Install failed: \(error.localizedDescription)"
-            }
+    private static func isParakeetInstalled(fileManager: FileManager) -> Bool {
+        guard let cacheDir = try? HuggingFaceDownloader.getCacheDirectory(for: parakeetModelID) else {
+            return false
         }
+        return fileManager.fileExists(atPath: cacheDir.appendingPathComponent("encoder.mlmodelc").path)
+            && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("decoder.mlmodelc").path)
+            && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("joint.mlmodelc").path)
+            && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("vocab.json").path)
     }
 
-    func deleteModel(id: String) {
-        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
-        guard !models[index].isBuiltIn, models[index].isInstalled else { return }
-
-        do {
-            try deleteMarker(for: models[index])
-            let deletedModel = models[index]
-            models[index].isInstalled = false
-            models[index].isDownloading = false
-            models[index].downloadProgress = 0
-            models[index].statusNote = "Removed from app storage."
-            persistInstalledModels()
-            resetSelectionsIfNeeded(deletedModel: deletedModel)
-        } catch {
-            models[index].statusNote = "Delete failed: \(error.localizedDescription)"
+    private static func isQwenInstalled(fileManager: FileManager) -> Bool {
+        guard let cacheDir = try? HuggingFaceDownloader.getCacheDirectory(for: qwen3ASRModelID) else {
+            return false
         }
+        return HuggingFaceDownloader.weightsExist(in: cacheDir)
+            && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("vocab.json").path)
     }
 
     private static func resolveASREngine(_ engine: ASREngine, with models: [InferenceModel]) -> ASREngine {
@@ -188,10 +269,9 @@ final class ModelManager: ObservableObject {
 
     private func persistInstalledModels() {
         let installedIDs = models
-            .filter { !$0.isBuiltIn && $0.isInstalled }
+            .filter { !$0.isBuiltIn && $0.isInstalled && $0.task == .translation }
             .map(\.id)
             .sorted()
-
         defaults.set(installedIDs, forKey: installedModelsKey)
     }
 
@@ -223,6 +303,13 @@ final class ModelManager: ObservableObject {
         let modelFolder = try modelFolderURL(for: model.id)
         if fileManager.fileExists(atPath: modelFolder.path) {
             try fileManager.removeItem(at: modelFolder)
+        }
+    }
+
+    private func removeCachedModel(modelID: String) throws {
+        let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelID)
+        if fileManager.fileExists(atPath: cacheDir.path) {
+            try fileManager.removeItem(at: cacheDir)
         }
     }
 

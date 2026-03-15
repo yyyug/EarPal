@@ -37,14 +37,20 @@ final class LiveTranslateViewModel: ObservableObject {
 
     private let modelManager: ModelManager
     private let speechRecognizer: AppleSpeechRecognizer
+    private let audioRecorder: AudioCaptureRecorder
+    private let localASRService: LocalASRService
     private var translationTask: Task<Void, Never>?
 
     init(
         modelManager: ModelManager,
-        speechRecognizer: AppleSpeechRecognizer? = nil
+        speechRecognizer: AppleSpeechRecognizer? = nil,
+        audioRecorder: AudioCaptureRecorder? = nil,
+        localASRService: LocalASRService = LocalASRService()
     ) {
         self.modelManager = modelManager
         self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
+        self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
+        self.localASRService = localASRService
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
@@ -105,9 +111,21 @@ final class LiveTranslateViewModel: ObservableObject {
 
     private func startListening() async {
         if modelManager.selectedASREngine != .apple {
+            guard modelManager.canUse(modelManager.selectedASREngine) else {
+                statusMessage = "\(modelManager.selectedASREngine.displayName) is not installed on this device."
+                return
+            }
+
+            let allowed = await audioRecorder.requestPermission()
+            guard allowed else {
+                statusMessage = "Microphone permission is not available."
+                return
+            }
+
             do {
-                try LocalInferenceRuntime(modelManager: modelManager)
-                    .startStreamingASR(engine: modelManager.selectedASREngine)
+                try audioRecorder.startRecording()
+                statusMessage = "Recording for offline transcription..."
+                isListening = true
             } catch {
                 statusMessage = error.localizedDescription
             }
@@ -130,6 +148,21 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func stopListening() {
+        if modelManager.selectedASREngine != .apple {
+            do {
+                let capturedAudio = try audioRecorder.stopRecording()
+                isListening = false
+                statusMessage = "Transcribing locally..."
+                Task { [weak self] in
+                    await self?.runLocalTranscription(capturedAudio)
+                }
+            } catch {
+                isListening = false
+                statusMessage = error.localizedDescription
+            }
+            return
+        }
+
         speechRecognizer.stopRecognition()
         isListening = false
 
@@ -149,6 +182,25 @@ final class LiveTranslateViewModel: ObservableObject {
     private func handleRecognizedText(_ text: String) {
         transcriptText = text
         refreshTranslationIfNeeded()
+    }
+
+    private func runLocalTranscription(_ capturedAudio: CapturedAudio) async {
+        do {
+            let transcript = try await localASRService.transcribe(
+                audio: capturedAudio,
+                engine: modelManager.selectedASREngine
+            ) { [weak self] _, status in
+                Task { @MainActor in
+                    self?.statusMessage = status
+                }
+            }
+
+            transcriptText = transcript
+            statusMessage = ""
+            refreshTranslationIfNeeded()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     private func translateCurrentTranscript() async {
