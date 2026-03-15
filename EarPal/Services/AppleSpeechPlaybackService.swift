@@ -17,9 +17,10 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private let synthesizer = AVSpeechSynthesizer()
-    private let audioSession = AVAudioSession.sharedInstance()
+    private let audioSessionCoordinator: AudioSessionCoordinator
 
-    override init() {
+    init(audioSessionCoordinator: AudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
         super.init()
         synthesizer.delegate = self
     }
@@ -143,11 +144,10 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     private func prepareAudioSessionForSpeech() {
-        try? audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        audioSessionCoordinator.beginSpeechPlayback()
     }
 
     private func deactivateAudioSession() {
-        try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        audioSessionCoordinator.endSpeechPlayback()
     }
 }

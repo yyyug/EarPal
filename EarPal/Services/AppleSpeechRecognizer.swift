@@ -22,8 +22,17 @@ final class AppleSpeechRecognizer {
     var onStopped: (() -> Void)?
 
     private let audioEngine = AVAudioEngine()
+    private let audioSessionCoordinator: AudioSessionCoordinator
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
+    private var speechRecognizer: SFSpeechRecognizer?
+    private var recognitionTaskGeneration = 0
+    private var captureSessionActive = false
+    private var shouldContinueRecognition = false
+
+    init(audioSessionCoordinator: AudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+    }
 
     func requestPermissions() async -> Bool {
         let speechAuthorized = await withCheckedContinuation { continuation in
@@ -50,20 +59,18 @@ final class AppleSpeechRecognizer {
     }
 
     func startRecognition(localeIdentifier: String) throws {
-        stopRecognition()
+        stopRecognition(notify: false)
 
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier)),
               recognizer.isAvailable else {
             throw SpeechRecognizerError.recognizerUnavailable
         }
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        recognitionRequest = request
+        speechRecognizer = recognizer
+        shouldContinueRecognition = true
 
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothHFP])
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSessionCoordinator.activateCaptureSession()
+        captureSessionActive = true
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
@@ -76,32 +83,78 @@ final class AppleSpeechRecognizer {
         do {
             try audioEngine.start()
         } catch {
+            inputNode.removeTap(onBus: 0)
+            cleanupCaptureSession()
             throw SpeechRecognizerError.audioEngineFailure
         }
 
-        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            if let bestText = result?.bestTranscription.formattedString {
-                Task { @MainActor in
-                    self?.onText?(bestText)
-                }
-            }
-
-            if error != nil || result?.isFinal == true {
-                Task { @MainActor in
-                    self?.stopRecognition()
-                }
-            }
-        }
+        beginRecognitionTask(with: recognizer)
     }
 
     func stopRecognition() {
+        stopRecognition(notify: true)
+    }
+
+    private func stopRecognition(notify: Bool) {
+        shouldContinueRecognition = false
+        recognitionTaskGeneration += 1
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        onStopped?()
+        speechRecognizer = nil
+        cleanupCaptureSession()
+        if notify {
+            onStopped?()
+        }
+    }
+
+    private func beginRecognitionTask(with recognizer: SFSpeechRecognizer) {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        recognitionRequest = request
+        recognitionTaskGeneration += 1
+        let generation = recognitionTaskGeneration
+
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            if let bestText = result?.bestTranscription.formattedString {
+                Task { @MainActor in
+                    guard self?.recognitionTaskGeneration == generation else { return }
+                    self?.onText?(bestText)
+                }
+            }
+
+            guard error != nil || result?.isFinal == true else { return }
+
+            Task { @MainActor in
+                self?.handleRecognitionTaskCompletion(for: generation)
+            }
+        }
+    }
+
+    private func handleRecognitionTaskCompletion(for generation: Int) {
+        guard generation == recognitionTaskGeneration else { return }
+
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        recognitionTask = nil
+
+        guard shouldContinueRecognition,
+              audioEngine.isRunning,
+              let recognizer = speechRecognizer,
+              recognizer.isAvailable else {
+            stopRecognition()
+            return
+        }
+
+        beginRecognitionTask(with: recognizer)
+    }
+
+    private func cleanupCaptureSession() {
+        guard captureSessionActive else { return }
+        captureSessionActive = false
+        audioSessionCoordinator.deactivateCaptureSession()
     }
 }

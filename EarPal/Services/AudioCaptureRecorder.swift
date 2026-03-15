@@ -17,11 +17,17 @@ enum AudioCaptureRecorderError: LocalizedError {
 
 final class AudioCaptureRecorder {
     private let audioEngine = AVAudioEngine()
+    private let audioSessionCoordinator: AudioSessionCoordinator
     private var audioConverter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
     private let stateLock = NSLock()
     private var isRecording = false
+    private var captureSessionActive = false
     private var chunkHandler: (@Sendable ([Float], Int) -> Void)?
+
+    init(audioSessionCoordinator: AudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+    }
 
     func requestPermission() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
@@ -67,9 +73,8 @@ final class AudioCaptureRecorder {
         self.targetFormat = targetFormat
         stateLock.unlock()
 
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothHFP])
-        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        try audioSessionCoordinator.activateCaptureSession()
+        captureSessionActive = true
 
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
@@ -84,6 +89,7 @@ final class AudioCaptureRecorder {
             stateLock.unlock()
         } catch {
             inputNode.removeTap(onBus: 0)
+            cleanupCaptureSession()
             throw AudioCaptureRecorderError.recordingUnavailable
         }
     }
@@ -101,11 +107,17 @@ final class AudioCaptureRecorder {
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        cleanupCaptureSession()
         stateLock.lock()
         audioConverter = nil
         targetFormat = nil
         stateLock.unlock()
+    }
+
+    private func cleanupCaptureSession() {
+        guard captureSessionActive else { return }
+        captureSessionActive = false
+        audioSessionCoordinator.deactivateCaptureSession()
     }
 
     private func processIncomingBuffer(_ buffer: AVAudioPCMBuffer) {

@@ -12,8 +12,6 @@ struct LiveTranslateView: View {
                     engineSummary
                     transcriptCard
                     translationCard
-                    primaryAction
-                    utilityRow
                 }
                 .padding(20)
             }
@@ -33,6 +31,9 @@ struct LiveTranslateView: View {
             }
             .overlay(alignment: .topLeading) {
                 appleTranslationBridge
+            }
+            .safeAreaInset(edge: .bottom) {
+                bottomBar
             }
             .onChange(of: viewModel.sourceLanguage) { _, _ in
                 viewModel.refreshTranslationIfNeeded()
@@ -100,31 +101,38 @@ struct LiveTranslateView: View {
                 await viewModel.toggleListening()
             }
         } label: {
-            VStack(spacing: 10) {
+            HStack(spacing: 10) {
                 Image(systemName: viewModel.isListening ? "stop.circle.fill" : "waveform.circle.fill")
-                    .font(.system(size: 42))
-                Text(viewModel.isListening ? "Stop Listening" : "Start Listening")
-                    .font(.title2.weight(.bold))
+                    .font(.title3.weight(.semibold))
+                Text(viewModel.isListening ? "Stop" : "Start")
+                    .font(.headline.weight(.bold))
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 22)
+            .padding(.horizontal, 20)
+            .frame(minWidth: 132, minHeight: 52)
             .foregroundStyle(Color.white)
             .background(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(viewModel.isListening ? Color.red : Color.black)
             )
         }
         .accessibilityHint("Starts or stops live listening for translation.")
     }
 
-    private var utilityRow: some View {
+    private var bottomBar: some View {
         HStack(spacing: 12) {
             Button("Settings") {
                 viewModel.isShowingAudioOptions = true
             }
             .buttonStyle(.bordered)
+
+            Spacer()
+
+            primaryAction
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
     }
 
     private var settingsPresented: Binding<Bool> {
