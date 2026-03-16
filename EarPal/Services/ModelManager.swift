@@ -8,6 +8,9 @@ import SpeechVAD
 @MainActor
 final class ModelManager: ObservableObject {
     static let parakeetModelID = ParakeetASRModel.defaultModelId
+    static let senseVoiceRepositoryURL = URL(string: "https://github.com/FunAudioLLM/SenseVoice")!
+    static let senseVoiceModelDownloadURL = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/model.int8.onnx?download=true")!
+    static let senseVoiceTokensDownloadURL = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/tokens.txt?download=true")!
     static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
     static let sileroVADModelID = SileroVADModel.defaultCoreMLModelId
     static let translateGemmaDownloadURL = URL(string: "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true")!
@@ -98,6 +101,15 @@ final class ModelManager: ObservableObject {
                     await MainActor.run {
                         self.markInstalled(id: modelID, note: "Parakeet and live VAD downloaded to local cache.")
                     }
+                case "sensevoice-asr":
+                    try await downloadSenseVoiceModel { [weak self] progress, status in
+                        Task { @MainActor in
+                            self?.updateDownloadState(id: modelID, progress: progress, note: status)
+                        }
+                    }
+                    await MainActor.run {
+                        self.markInstalled(id: modelID, note: "SenseVoice model downloaded to app storage.")
+                    }
                 case "qwen3-asr":
                     let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
                         Task { @MainActor in
@@ -144,12 +156,20 @@ final class ModelManager: ObservableObject {
             switch id {
             case "parakeet-asr":
                 try removeCachedModel(modelID: Self.parakeetModelID)
-                if !Self.isQwenInstalled(fileManager: fileManager) {
+                if !Self.isQwenInstalled(fileManager: fileManager),
+                   !Self.isSenseVoiceInstalled(fileManager: fileManager) {
+                    try removeCachedModel(modelID: Self.sileroVADModelID)
+                }
+            case "sensevoice-asr":
+                try deleteSenseVoiceModel()
+                if !Self.isParakeetInstalled(fileManager: fileManager),
+                   !Self.isQwenInstalled(fileManager: fileManager) {
                     try removeCachedModel(modelID: Self.sileroVADModelID)
                 }
             case "qwen3-asr":
                 try removeCachedModel(modelID: Self.qwen3ASRModelID)
-                if !Self.isParakeetInstalled(fileManager: fileManager) {
+                if !Self.isParakeetInstalled(fileManager: fileManager),
+                   !Self.isSenseVoiceInstalled(fileManager: fileManager) {
                     try removeCachedModel(modelID: Self.sileroVADModelID)
                 }
             case "translate-gemma":
@@ -194,6 +214,7 @@ final class ModelManager: ObservableObject {
 
     private static func makeInitialModels(installedIDs: Set<String>, fileManager: FileManager) -> [InferenceModel] {
         let parakeetInstalled = isParakeetInstalled(fileManager: fileManager)
+        let senseVoiceInstalled = isSenseVoiceInstalled(fileManager: fileManager)
         let qwenInstalled = isQwenInstalled(fileManager: fileManager)
         let translateGemmaInstalled = isTranslateGemmaInstalled(fileManager: fileManager) || installedIDs.contains("translate-gemma")
 
@@ -225,6 +246,22 @@ final class ModelManager: ObservableObject {
                 isDownloading: false,
                 downloadProgress: parakeetInstalled ? 1 : 0,
                 statusNote: parakeetInstalled ? "Ready for offline transcription." : "Downloads CoreML weights for on-device ASR."
+            ),
+            InferenceModel(
+                id: "sensevoice-asr",
+                displayName: "SenseVoice",
+                task: .asr,
+                engineID: ASREngine.senseVoice.rawValue,
+                supportsLanguages: TranslationLanguage.commonOptions.map(\.id),
+                sizeDescription: "~0.23 GB",
+                downloadURL: Self.senseVoiceRepositoryURL,
+                isBuiltIn: false,
+                isInstalled: senseVoiceInstalled,
+                isDownloading: false,
+                downloadProgress: senseVoiceInstalled ? 1 : 0,
+                statusNote: senseVoiceInstalled
+                    ? "Ready for offline transcription."
+                    : "Downloads the current sherpa-onnx SenseVoice int8 model to app storage."
             ),
             InferenceModel(
                 id: "qwen3-asr",
@@ -279,6 +316,23 @@ final class ModelManager: ObservableObject {
             && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("decoder.mlmodelc").path)
             && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("joint.mlmodelc").path)
             && fileManager.fileExists(atPath: cacheDir.appendingPathComponent("vocab.json").path)
+    }
+
+    private static func isSenseVoiceInstalled(fileManager: FileManager) -> Bool {
+        guard let modelDir = try? senseVoiceModelDirectoryURL(fileManager: fileManager) else {
+            return false
+        }
+
+        let hasTokens = fileManager.fileExists(atPath: modelDir.appendingPathComponent("tokens.txt").path)
+        let candidates = [
+            "model.int8.onnx",
+            "model.onnx",
+            "sense-voice.onnx",
+            "sense-voice-int8.onnx"
+        ]
+        let hasModel = candidates.contains { fileManager.fileExists(atPath: modelDir.appendingPathComponent($0).path) }
+
+        return hasTokens && hasModel
     }
 
     private static func isQwenInstalled(fileManager: FileManager) -> Bool {
@@ -348,8 +402,43 @@ final class ModelManager: ObservableObject {
         progressHandler(1.0, "TranslateGemma ready.")
     }
 
+    private func downloadSenseVoiceModel(
+        progressHandler: @escaping @Sendable (Double, String) -> Void
+    ) async throws {
+        let modelFolder = try Self.senseVoiceModelDirectoryURL(fileManager: fileManager)
+        if !fileManager.fileExists(atPath: modelFolder.path) {
+            try fileManager.createDirectory(at: modelFolder, withIntermediateDirectories: true)
+        }
+
+        let destinationModelURL = modelFolder.appendingPathComponent("model.int8.onnx")
+        let destinationTokensURL = modelFolder.appendingPathComponent("tokens.txt")
+
+        progressHandler(0.05, "Downloading SenseVoice model...")
+        let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceModelDownloadURL)
+        if fileManager.fileExists(atPath: destinationModelURL.path) {
+            try fileManager.removeItem(at: destinationModelURL)
+        }
+        try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
+
+        progressHandler(0.92, "Downloading SenseVoice vocabulary...")
+        let (temporaryTokensURL, _) = try await URLSession.shared.download(from: Self.senseVoiceTokensDownloadURL)
+        if fileManager.fileExists(atPath: destinationTokensURL.path) {
+            try fileManager.removeItem(at: destinationTokensURL)
+        }
+        try fileManager.moveItem(at: temporaryTokensURL, to: destinationTokensURL)
+
+        progressHandler(1.0, "SenseVoice ready.")
+    }
+
     private func deleteTranslateGemmaModel() throws {
         let modelFolder = try modelFolderURL(for: "translate-gemma")
+        if fileManager.fileExists(atPath: modelFolder.path) {
+            try fileManager.removeItem(at: modelFolder)
+        }
+    }
+
+    private func deleteSenseVoiceModel() throws {
+        let modelFolder = try Self.senseVoiceModelDirectoryURL(fileManager: fileManager)
         if fileManager.fileExists(atPath: modelFolder.path) {
             try fileManager.removeItem(at: modelFolder)
         }
@@ -392,5 +481,19 @@ final class ModelManager: ObservableObject {
             try fileManager.createDirectory(at: gemmaFolder, withIntermediateDirectories: true)
         }
         return gemmaFolder.appendingPathComponent(translateGemmaFileName, isDirectory: false)
+    }
+
+    static func senseVoiceModelDirectoryURL(fileManager: FileManager = .default) throws -> URL {
+        let baseURL = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let modelsURL = baseURL.appendingPathComponent("EarPalModels", isDirectory: true)
+        if !fileManager.fileExists(atPath: modelsURL.path) {
+            try fileManager.createDirectory(at: modelsURL, withIntermediateDirectories: true)
+        }
+        return modelsURL.appendingPathComponent("sensevoice", isDirectory: true)
     }
 }

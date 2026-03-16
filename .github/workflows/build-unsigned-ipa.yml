@@ -42,6 +42,14 @@ jobs:
       - name: Install Pods
         run: pod install
 
+      - name: Download SherpaOnnx iOS runtime
+        run: |
+          mkdir -p Vendor/SherpaOnnx
+          curl -L \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.29/sherpa-onnx-v1.12.29-ios-no-tts.tar.bz2 \
+            -o "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2"
+          tar -xjf "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2" -C Vendor/SherpaOnnx
+
       - name: Build app for device
         run: |
           mkdir -p "$DERIVED_DATA_PATH" "$CLONED_SOURCE_PACKAGES_PATH"

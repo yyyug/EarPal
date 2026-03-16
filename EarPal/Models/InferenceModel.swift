@@ -3,6 +3,7 @@ import Foundation
 enum ASREngine: String, CaseIterable, Identifiable {
     case apple
     case parakeet
+    case senseVoice
     case qwen3
 
     var id: String { rawValue }
@@ -13,6 +14,8 @@ enum ASREngine: String, CaseIterable, Identifiable {
             return "Apple Speech"
         case .parakeet:
             return "NVIDIA Parakeet"
+        case .senseVoice:
+            return "SenseVoice"
         case .qwen3:
             return "Qwen3-ASR"
         }

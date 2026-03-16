@@ -22,6 +22,8 @@ enum LocalASRServiceError: LocalizedError {
 }
 
 struct LocalASRService {
+    private let senseVoiceService = SenseVoiceASRService()
+
     func makeStreamingSession(
         engine: ASREngine,
         progressHandler: @escaping @Sendable (Double, String) -> Void,
@@ -42,6 +44,19 @@ struct LocalASRService {
             )
             return LocalASRStreamingSession(
                 engine: .parakeet(model),
+                vadModel: vadModel,
+                transcriptHandler: transcriptHandler
+            )
+        case .senseVoice:
+            progressHandler(0.1, "Preparing SenseVoice...")
+            let runtime = try await senseVoiceService.makeRuntime()
+            let vadModel = try await SileroVADModel.fromPretrained(
+                modelId: ModelManager.sileroVADModelID,
+                engine: .coreml,
+                progressHandler: progressHandler
+            )
+            return LocalASRStreamingSession(
+                engine: .senseVoice(runtime),
                 vadModel: vadModel,
                 transcriptHandler: transcriptHandler
             )
@@ -67,12 +82,15 @@ struct LocalASRService {
 actor LocalASRStreamingSession {
     enum EngineRuntime {
         case parakeet(ParakeetASRModel)
+        case senseVoice(any SenseVoiceRuntime)
         case qwen3(Qwen3ASRModel)
 
         func transcribe(audio: [Float]) throws -> String {
             switch self {
             case .parakeet(let model):
                 return try model.transcribeAudio(audio, sampleRate: 16_000, language: nil)
+            case .senseVoice(let runtime):
+                return try runtime.transcribe(audio: audio)
             case .qwen3(let model):
                 return model.transcribe(audio: audio, sampleRate: 16_000, language: nil)
             }
@@ -82,6 +100,8 @@ actor LocalASRStreamingSession {
             switch self {
             case .parakeet(let model):
                 model.unload()
+            case .senseVoice(let runtime):
+                runtime.unload()
             case .qwen3(let model):
                 model.unload()
             }
@@ -228,6 +248,8 @@ actor LocalASRStreamingSession {
         switch engine {
         case .parakeet:
             return ASREngine.parakeet.displayName
+        case .senseVoice:
+            return ASREngine.senseVoice.displayName
         case .qwen3:
             return ASREngine.qwen3.displayName
         }
