@@ -483,7 +483,7 @@ final class ModelManager: ObservableObject {
         return gemmaFolder.appendingPathComponent(translateGemmaFileName, isDirectory: false)
     }
 
-    static func senseVoiceModelDirectoryURL(fileManager: FileManager = .default) throws -> URL {
+    nonisolated static func senseVoiceModelDirectoryURL(fileManager: FileManager = .default) throws -> URL {
         let baseURL = try fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
