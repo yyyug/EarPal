@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 import Accelerate
-import CoreML
+@preconcurrency import CoreML
 
 protocol SenseVoiceRuntime: Sendable {
     func transcribe(audio: [Float]) throws -> String
@@ -179,7 +179,7 @@ struct SenseVoiceASRService {
     }
 }
 
-private final class SherpaOnnxSenseVoiceRuntime: SenseVoiceRuntime {
+private final class SherpaOnnxSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRuntime {
     private let recognizer: SherpaOnnxOfflineRecognizerWrapper
 
     init(modelURL: URL, tokensURL: URL, language: String) throws {
@@ -213,7 +213,7 @@ private final class SherpaOnnxSenseVoiceRuntime: SenseVoiceRuntime {
     func unload() {}
 }
 
-private final class GGMLSenseVoiceRuntime: SenseVoiceRuntime {
+private final class GGMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRuntime {
     private let recognizer: SenseVoiceGGMLRecognizer
 
     init(modelURL: URL, language: String) throws {
@@ -238,7 +238,7 @@ private final class GGMLSenseVoiceRuntime: SenseVoiceRuntime {
     }
 }
 
-private final class CoreMLSenseVoiceRuntime: SenseVoiceRuntime {
+private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRuntime {
     private let model: MLModel
     private let decoder: SentencePieceDecoder
     private let featureExtractor: SenseVoiceCoreMLFeatureExtractor
@@ -294,7 +294,7 @@ private final class CoreMLSenseVoiceRuntime: SenseVoiceRuntime {
         let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: frames.count)
         frames.withUnsafeBufferPointer { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
-            pointer.assign(from: baseAddress, count: frames.count)
+            pointer.update(from: baseAddress, count: frames.count)
         }
         return array
     }
@@ -304,7 +304,7 @@ private final class CoreMLSenseVoiceRuntime: SenseVoiceRuntime {
         let pointer = array.dataPointer.bindMemory(to: Int32.self, capacity: values.count)
         values.withUnsafeBufferPointer { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
-            pointer.assign(from: baseAddress, count: values.count)
+            pointer.update(from: baseAddress, count: values.count)
         }
         return array
     }
@@ -313,8 +313,6 @@ private final class CoreMLSenseVoiceRuntime: SenseVoiceRuntime {
         switch array.dataType {
         case .int32:
             return Int(array.dataPointer.bindMemory(to: Int32.self, capacity: 1).pointee)
-        case .int64:
-            return Int(array.dataPointer.bindMemory(to: Int64.self, capacity: 1).pointee)
         default:
             return Int(array[0].intValue)
         }
@@ -438,7 +436,7 @@ private struct SenseVoiceCMVN {
     }
 }
 
-private struct SenseVoiceCoreMLFeatureExtractor {
+private struct SenseVoiceCoreMLFeatureExtractor: Sendable {
     static let sampleRate = 16_000
     static let frameSize = 400
     static let frameStep = 160
