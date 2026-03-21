@@ -155,7 +155,7 @@ private final class GGMLSenseVoiceRuntime: SenseVoiceRuntime {
         let data = audio.withUnsafeBufferPointer { buffer in
             Data(bytes: buffer.baseAddress!, count: buffer.count * MemoryLayout<Float>.size)
         }
-        return try recognizer.transcribePCMFloatData(data, sampleCount: audio.count)
+        return try recognizer.transcribePCMFloat(data, sampleCount: audio.count)
     }
 
     func unload() {
