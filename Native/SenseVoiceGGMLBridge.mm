@@ -47,6 +47,23 @@ NSString *SenseVoiceGGMLTranscriptFromContext(struct sense_voice_context *contex
     return [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
+void SenseVoiceGGMLFreeContext(struct sense_voice_context *context) {
+    if (context == nullptr) {
+        return;
+    }
+
+    ggml_free(context->model.ctx);
+    ggml_backend_buffer_free(context->model.buffer);
+    ggml_backend_buffer_free(context->vad_model.buffer);
+
+    sense_voice_free_state(context->state);
+
+    delete context->model.model->encoder;
+    delete context->model.model;
+    delete context->vad_model.model;
+    delete context;
+}
+
 }  // namespace
 
 @implementation SenseVoiceGGMLRecognizer {
@@ -174,7 +191,7 @@ NSString *SenseVoiceGGMLTranscriptFromContext(struct sense_voice_context *contex
 
 - (void)unload {
     if (_context != nullptr) {
-        sense_voice_free(_context);
+        SenseVoiceGGMLFreeContext(_context);
         _context = nullptr;
     }
 }
