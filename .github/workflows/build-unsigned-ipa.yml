@@ -13,6 +13,8 @@ jobs:
     env:
       DERIVED_DATA_PATH: ${{ github.workspace }}/.ci/DerivedData
       CLONED_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci/SourcePackages
+      SHERPA_ONNX_VERSION: v1.12.29
+      SENSEVOICE_CPP_REF: 6503f51c2357034e1443c86dabeb24ad026c4b45
 
     steps:
       - name: Checkout
@@ -35,6 +37,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-xcode-packages-
 
+      - name: Inspect Apple toolchain
+        id: toolchain
+        run: |
+          echo "xcode_version=$(xcodebuild -version | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
+          echo "iphoneos_sdk=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
+
       - name: Install CocoaPods
         run: |
           gem list cocoapods -i || sudo gem install cocoapods
@@ -42,15 +50,31 @@ jobs:
       - name: Install Pods
         run: pod install
 
+      - name: Restore SherpaOnnx runtime cache
+        id: cache-sherpa-onnx
+        uses: actions/cache@v4
+        with:
+          path: Vendor/SherpaOnnx/build-ios-no-tts
+          key: ${{ runner.os }}-sherpa-onnx-${{ env.SHERPA_ONNX_VERSION }}-${{ hashFiles('.github/workflows/build-unsigned-ipa.yml') }}
+
       - name: Download SherpaOnnx iOS runtime
+        if: steps.cache-sherpa-onnx.outputs.cache-hit != 'true'
         run: |
           mkdir -p Vendor/SherpaOnnx
           curl -L \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.29/sherpa-onnx-v1.12.29-ios-no-tts.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/${SHERPA_ONNX_VERSION}/sherpa-onnx-${SHERPA_ONNX_VERSION}-ios-no-tts.tar.bz2 \
             -o "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2"
           tar -xjf "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2" -C Vendor/SherpaOnnx
 
+      - name: Restore SenseVoice ggml XCFramework cache
+        id: cache-sensevoice-ggml
+        uses: actions/cache@v4
+        with:
+          path: Vendor/SenseVoiceGGML/output/SenseVoiceGGML.xcframework
+          key: ${{ runner.os }}-sensevoice-ggml-xcframework-xcode${{ steps.toolchain.outputs.xcode_version }}-sdk${{ steps.toolchain.outputs.iphoneos_sdk }}-ref${{ env.SENSEVOICE_CPP_REF }}-${{ hashFiles('scripts/build-sensevoice-ggml-ios.sh', 'Native/SenseVoiceGGMLBridge.mm', 'EarPal/SenseVoiceGGMLBridge.h') }}
+
       - name: Build SenseVoice ggml iOS runtime
+        if: steps.cache-sensevoice-ggml.outputs.cache-hit != 'true'
         run: |
           bash scripts/build-sensevoice-ggml-ios.sh
 

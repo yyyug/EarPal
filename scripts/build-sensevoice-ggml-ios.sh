@@ -8,15 +8,29 @@ SOURCE_DIR="$VENDOR_DIR/source"
 BUILD_DIR="$VENDOR_DIR/build"
 OUTPUT_DIR="$VENDOR_DIR/output"
 PUBLIC_HEADERS_DIR="$OUTPUT_DIR/include"
-UPSTREAM_REPO="https://github.com/lovemefan/SenseVoice.cpp"
+UPSTREAM_REPO="${SENSEVOICE_CPP_REPO:-https://github.com/lovemefan/SenseVoice.cpp}"
+UPSTREAM_REF="${SENSEVOICE_CPP_REF:-6503f51c2357034e1443c86dabeb24ad026c4b45}"
 MIN_IOS_VERSION="${MIN_IOS_VERSION:-17.0}"
+XCFRAMEWORK_PATH="$OUTPUT_DIR/SenseVoiceGGML.xcframework"
 
 mkdir -p "$VENDOR_DIR" "$BUILD_DIR" "$OUTPUT_DIR" "$PUBLIC_HEADERS_DIR"
 
-if [ ! -d "$SOURCE_DIR/.git" ]; then
-  git clone --recurse-submodules "$UPSTREAM_REPO" "$SOURCE_DIR"
+if [ -f "$XCFRAMEWORK_PATH/Info.plist" ]; then
+  echo "Using cached SenseVoiceGGML.xcframework"
+  exit 0
 fi
 
+if [ ! -d "$SOURCE_DIR/.git" ]; then
+  git clone "$UPSTREAM_REPO" "$SOURCE_DIR"
+fi
+
+git -C "$SOURCE_DIR" fetch --depth 1 origin "$UPSTREAM_REF"
+git -C "$SOURCE_DIR" checkout --force "$UPSTREAM_REF"
+git -C "$SOURCE_DIR" submodule sync --recursive
+git -C "$SOURCE_DIR" submodule update --init --recursive --depth 1
+
+rm -rf "$BUILD_DIR" "$OUTPUT_DIR"
+mkdir -p "$BUILD_DIR" "$OUTPUT_DIR" "$PUBLIC_HEADERS_DIR"
 cp "$ROOT_DIR/EarPal/SenseVoiceGGMLBridge.h" "$PUBLIC_HEADERS_DIR/SenseVoiceGGMLBridge.h"
 
 build_sdk() {
@@ -97,9 +111,10 @@ build_sdk() {
 build_sdk iphoneos "iOS"
 build_sdk iphonesimulator "iOS Simulator"
 
+rm -rf "$XCFRAMEWORK_PATH"
 xcodebuild -create-xcframework \
   -library "$BUILD_DIR/iphoneos/libSenseVoiceGGML.a" \
   -headers "$PUBLIC_HEADERS_DIR" \
   -library "$BUILD_DIR/iphonesimulator/libSenseVoiceGGML.a" \
   -headers "$PUBLIC_HEADERS_DIR" \
-  -output "$OUTPUT_DIR/SenseVoiceGGML.xcframework"
+  -output "$XCFRAMEWORK_PATH"
