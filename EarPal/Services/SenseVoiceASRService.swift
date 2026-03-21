@@ -10,6 +10,9 @@ enum SenseVoiceASRServiceError: LocalizedError {
     case modelFilesMissing
     case recognizerCreationFailed
     case emptyRecognizerStream
+    case ggmlRuntimeUnavailable
+    case ggmlModelMissing
+    case coreMLRuntimeUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +22,12 @@ enum SenseVoiceASRServiceError: LocalizedError {
             return "SenseVoice failed to initialize."
         case .emptyRecognizerStream:
             return "SenseVoice failed to create a decoder stream."
+        case .ggmlRuntimeUnavailable:
+            return "The ggml + Metal SenseVoice runtime is unavailable in this build."
+        case .ggmlModelMissing:
+            return "The SenseVoice GGUF model is missing. Download the ggml + Metal backend assets from Models & Engines, then try again."
+        case .coreMLRuntimeUnavailable:
+            return "The unofficial Core ML SenseVoice backend is not linked into this build yet."
         }
     }
 }
@@ -30,18 +39,31 @@ struct SenseVoiceASRService {
         self.fileManager = fileManager
     }
 
-    func makeRuntime() async throws -> any SenseVoiceRuntime {
-        let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
-        let tokensURL = modelDirectory.appendingPathComponent("tokens.txt")
-        let modelURL = resolveModelURL(in: modelDirectory)
+    func makeRuntime(language: String, backend: SenseVoiceBackend) async throws -> any SenseVoiceRuntime {
+        switch backend {
+        case .sherpaOnnx:
+            let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
+            let tokensURL = modelDirectory.appendingPathComponent("tokens.txt")
+            let modelURL = resolveModelURL(in: modelDirectory)
 
-        guard fileManager.fileExists(atPath: tokensURL.path),
-              let modelURL,
-              fileManager.fileExists(atPath: modelURL.path) else {
-            throw SenseVoiceASRServiceError.modelFilesMissing
+            guard fileManager.fileExists(atPath: tokensURL.path),
+                  let modelURL,
+                  fileManager.fileExists(atPath: modelURL.path) else {
+                throw SenseVoiceASRServiceError.modelFilesMissing
+            }
+
+            return try SherpaOnnxSenseVoiceRuntime(modelURL: modelURL, tokensURL: tokensURL, language: language)
+        case .ggmlMetal:
+            let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
+            guard let modelURL = resolveGGUFModelURL(in: modelDirectory),
+                  fileManager.fileExists(atPath: modelURL.path) else {
+                throw SenseVoiceASRServiceError.ggmlModelMissing
+            }
+
+            return try GGMLSenseVoiceRuntime(modelURL: modelURL, language: language)
+        case .coreML:
+            throw SenseVoiceASRServiceError.coreMLRuntimeUnavailable
         }
-
-        return try SherpaOnnxSenseVoiceRuntime(modelURL: modelURL, tokensURL: tokensURL)
     }
 
     private func resolveModelURL(in directory: URL) -> URL? {
@@ -61,12 +83,31 @@ struct SenseVoiceASRService {
 
         return nil
     }
+
+    private func resolveGGUFModelURL(in directory: URL) -> URL? {
+        let candidates = [
+            "sense-voice-small-q4_k.gguf",
+            "sense-voice-small-q8_0.gguf",
+            "sense-voice-small-f16.gguf",
+            "gguf-fp16-sense-voice-small.bin",
+            "gguf-fp32-sense-voice-small.bin"
+        ]
+
+        for candidate in candidates {
+            let url = directory.appendingPathComponent(candidate)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        return nil
+    }
 }
 
 private final class SherpaOnnxSenseVoiceRuntime: SenseVoiceRuntime {
     private let recognizer: SherpaOnnxOfflineRecognizerWrapper
 
-    init(modelURL: URL, tokensURL: URL) throws {
+    init(modelURL: URL, tokensURL: URL, language: String) throws {
         let config = sherpaOnnxOfflineRecognizerConfig(
             featConfig: sherpaOnnxFeatureConfig(),
             model: sherpaOnnxOfflineModelConfig(
@@ -74,7 +115,7 @@ private final class SherpaOnnxSenseVoiceRuntime: SenseVoiceRuntime {
                 senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(
                     model: modelURL.path,
                     useInverseTextNormalization: true,
-                    language: ""
+                    language: language
                 ),
                 numThreads: max(1, ProcessInfo.processInfo.processorCount / 2),
                 debug: false,
@@ -95,6 +136,31 @@ private final class SherpaOnnxSenseVoiceRuntime: SenseVoiceRuntime {
     }
 
     func unload() {}
+}
+
+private final class GGMLSenseVoiceRuntime: SenseVoiceRuntime {
+    private let recognizer: SenseVoiceGGMLRecognizer
+
+    init(modelURL: URL, language: String) throws {
+        self.recognizer = try SenseVoiceGGMLRecognizer(
+            modelPath: modelURL.path,
+            language: language,
+            useITN: true,
+            threads: max(1, ProcessInfo.processInfo.processorCount / 2)
+        )
+    }
+
+    func transcribe(audio: [Float]) throws -> String {
+        guard !audio.isEmpty else { return "" }
+        let data = audio.withUnsafeBufferPointer { buffer in
+            Data(bytes: buffer.baseAddress!, count: buffer.count * MemoryLayout<Float>.size)
+        }
+        return try recognizer.transcribePCMFloatData(data, sampleCount: audio.count)
+    }
+
+    func unload() {
+        recognizer.unload()
+    }
 }
 
 private func toCPointer(_ string: String) -> UnsafePointer<CChar>? {

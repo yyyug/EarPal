@@ -26,6 +26,9 @@ struct LocalASRService {
 
     func makeStreamingSession(
         engine: ASREngine,
+        sourceLanguageID: String? = nil,
+        senseVoiceLanguage: SenseVoiceLanguageOption = .auto,
+        senseVoiceBackend: SenseVoiceBackend = .sherpaOnnx,
         progressHandler: @escaping @Sendable (Double, String) -> Void,
         transcriptHandler: @escaping @Sendable (LocalASRTranscriptUpdate) -> Void
     ) async throws -> LocalASRStreamingSession {
@@ -49,7 +52,11 @@ struct LocalASRService {
             )
         case .senseVoice:
             progressHandler(0.1, "Preparing SenseVoice...")
-            let runtime = try await senseVoiceService.makeRuntime()
+            let resolvedSenseVoiceLanguage = senseVoiceLanguage.resolvedCode(for: sourceLanguageID ?? "en")
+            let runtime = try await senseVoiceService.makeRuntime(
+                language: resolvedSenseVoiceLanguage,
+                backend: senseVoiceBackend
+            )
             let vadModel = try await SileroVADModel.fromPretrained(
                 modelId: ModelManager.sileroVADModelID,
                 engine: .coreml,
@@ -111,8 +118,8 @@ actor LocalASRStreamingSession {
     private let engine: EngineRuntime
     private let vadProcessor: StreamingVADProcessor
     private let transcriptHandler: @Sendable (LocalASRTranscriptUpdate) -> Void
-    private let partialResultInterval: Float = 0.9
-    private let maxSegmentDuration: Float = 10.0
+    private let partialResultInterval: Float = 1.5
+    private let maxSegmentDuration: Float = 5.0
 
     private var fullAudio: [Float] = []
     private var activeSpeechStartSample: Int?

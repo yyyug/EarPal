@@ -11,6 +11,9 @@ final class ModelManager: ObservableObject {
     static let senseVoiceRepositoryURL = URL(string: "https://github.com/FunAudioLLM/SenseVoice")!
     static let senseVoiceModelDownloadURL = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/model.int8.onnx?download=true")!
     static let senseVoiceTokensDownloadURL = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/tokens.txt?download=true")!
+    static let senseVoiceGGUFRepositoryURL = URL(string: "https://huggingface.co/lovemefan/sense-voice-gguf")!
+    static let senseVoiceGGUFDownloadURL = URL(string: "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf?download=true")!
+    static let senseVoiceCoreMLRepositoryURL = URL(string: "https://huggingface.co/mefengl/SenseVoiceSmall-coreml")!
     static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
     static let sileroVADModelID = SileroVADModel.defaultCoreMLModelId
     static let translateGemmaDownloadURL = URL(string: "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true")!
@@ -18,11 +21,15 @@ final class ModelManager: ObservableObject {
 
     @Published private(set) var models: [InferenceModel]
     @Published var selectedASREngine: ASREngine
+    @Published var selectedSenseVoiceLanguage: SenseVoiceLanguageOption
+    @Published var selectedSenseVoiceBackend: SenseVoiceBackend
     @Published var selectedTranslationEngine: TranslationEngine
 
     private let defaults = UserDefaults.standard
     private let installedModelsKey = "installed.model.ids"
     private let selectedASRKey = "selected.asr.engine"
+    private let selectedSenseVoiceLanguageKey = "selected.sensevoice.language"
+    private let selectedSenseVoiceBackendKey = "selected.sensevoice.backend"
     private let selectedTranslationKey = "selected.translation.engine"
     private let fileManager = FileManager.default
 
@@ -36,9 +43,17 @@ final class ModelManager: ObservableObject {
 
         let storedASR = ASREngine(rawValue: defaults.string(forKey: selectedASRKey) ?? "") ?? .apple
         selectedASREngine = Self.resolveASREngine(storedASR, with: initialModels)
+        selectedSenseVoiceLanguage = SenseVoiceLanguageOption(
+            rawValue: defaults.string(forKey: selectedSenseVoiceLanguageKey) ?? ""
+        ) ?? .auto
+        selectedSenseVoiceBackend = SenseVoiceBackend(
+            rawValue: defaults.string(forKey: selectedSenseVoiceBackendKey) ?? ""
+        ) ?? .sherpaOnnx
 
         let storedTranslation = TranslationEngine(rawValue: defaults.string(forKey: selectedTranslationKey) ?? "") ?? .apple
         selectedTranslationEngine = Self.resolveTranslationEngine(storedTranslation, with: initialModels)
+        refreshSenseVoiceModelState()
+        selectedASREngine = Self.resolveASREngine(selectedASREngine, with: models)
     }
 
     var asrModels: [InferenceModel] {
@@ -71,6 +86,33 @@ final class ModelManager: ObservableObject {
         defaults.set(resolved.rawValue, forKey: selectedTranslationKey)
     }
 
+    func selectSenseVoiceLanguage(_ option: SenseVoiceLanguageOption) {
+        selectedSenseVoiceLanguage = option
+        defaults.set(option.rawValue, forKey: selectedSenseVoiceLanguageKey)
+    }
+
+    func selectSenseVoiceBackend(_ backend: SenseVoiceBackend) {
+        selectedSenseVoiceBackend = backend
+        defaults.set(backend.rawValue, forKey: selectedSenseVoiceBackendKey)
+        refreshSenseVoiceModelState()
+        select(asr: selectedASREngine)
+    }
+
+    var selectedSenseVoiceBackendStatus: String {
+        switch selectedSenseVoiceBackend {
+        case .sherpaOnnx:
+            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .sherpaOnnx)
+                ? "Installed and ready with the current SherpaOnnx runtime."
+                : "Download the SenseVoice ONNX model to use this backend."
+        case .ggmlMetal:
+            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .ggmlMetal)
+                ? "Installed and ready with the ggml + Metal runtime."
+                : "Download the SenseVoice GGUF model to use this backend."
+        case .coreML:
+            return "Experimental. Unofficial Core ML conversion still needs a native Core ML inference adapter and validation."
+        }
+    }
+
     func downloadModel(id: String) {
         guard let index = models.firstIndex(where: { $0.id == id }) else { return }
         guard !models[index].isBuiltIn, !models[index].isInstalled, !models[index].isDownloading else { return }
@@ -80,6 +122,7 @@ final class ModelManager: ObservableObject {
         models[index].statusNote = "Preparing download..."
 
         let modelID = id
+        let selectedSenseVoiceBackend = self.selectedSenseVoiceBackend
         Task {
             do {
                 switch modelID {
@@ -102,13 +145,22 @@ final class ModelManager: ObservableObject {
                         self.markInstalled(id: modelID, note: "Parakeet and live VAD downloaded to local cache.")
                     }
                 case "sensevoice-asr":
-                    try await downloadSenseVoiceModel { [weak self] progress, status in
+                    try await downloadSenseVoiceModel(for: selectedSenseVoiceBackend) { [weak self] progress, status in
                         Task { @MainActor in
                             self?.updateDownloadState(id: modelID, progress: progress, note: status)
                         }
                     }
                     await MainActor.run {
-                        self.markInstalled(id: modelID, note: "SenseVoice model downloaded to app storage.")
+                        let note: String
+                        switch self.selectedSenseVoiceBackend {
+                        case .sherpaOnnx:
+                            note = "SenseVoice ONNX model downloaded to app storage."
+                        case .ggmlMetal:
+                            note = "SenseVoice GGUF model downloaded to app storage."
+                        case .coreML:
+                            note = "SenseVoice assets downloaded to app storage."
+                        }
+                        self.markInstalled(id: modelID, note: note)
                     }
                 case "qwen3-asr":
                     let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
@@ -196,6 +248,28 @@ final class ModelManager: ObservableObject {
         models[index].statusNote = note
     }
 
+    private func refreshSenseVoiceModelState() {
+        guard let index = models.firstIndex(where: { $0.id == "sensevoice-asr" }) else { return }
+
+        let installed = Self.isSenseVoiceInstalled(fileManager: fileManager, backend: selectedSenseVoiceBackend)
+        models[index].isInstalled = installed
+        models[index].isDownloading = false
+        models[index].downloadProgress = installed ? 1 : 0
+
+        switch selectedSenseVoiceBackend {
+        case .sherpaOnnx:
+            models[index].statusNote = installed
+                ? "SenseVoice ONNX backend is ready for offline transcription."
+                : "Downloads the current sherpa-onnx SenseVoice int8 model to app storage."
+        case .ggmlMetal:
+            models[index].statusNote = installed
+                ? "SenseVoice ggml + Metal backend is ready for offline transcription."
+                : "Downloads the SenseVoice GGUF model for the ggml + Metal runtime."
+        case .coreML:
+            models[index].statusNote = "The unofficial Core ML backend is still experimental and not available yet."
+        }
+    }
+
     private func markInstalled(id: String, note: String) {
         guard let index = models.firstIndex(where: { $0.id == id }) else { return }
         models[index].isInstalled = true
@@ -261,7 +335,7 @@ final class ModelManager: ObservableObject {
                 downloadProgress: senseVoiceInstalled ? 1 : 0,
                 statusNote: senseVoiceInstalled
                     ? "Ready for offline transcription."
-                    : "Downloads the current sherpa-onnx SenseVoice int8 model to app storage."
+                    : "Downloads the currently selected SenseVoice backend assets to app storage."
             ),
             InferenceModel(
                 id: "qwen3-asr",
@@ -319,20 +393,38 @@ final class ModelManager: ObservableObject {
     }
 
     private static func isSenseVoiceInstalled(fileManager: FileManager) -> Bool {
+        isSenseVoiceInstalled(fileManager: fileManager, backend: .sherpaOnnx)
+            || isSenseVoiceInstalled(fileManager: fileManager, backend: .ggmlMetal)
+    }
+
+    private static func isSenseVoiceInstalled(fileManager: FileManager, backend: SenseVoiceBackend) -> Bool {
         guard let modelDir = try? senseVoiceModelDirectoryURL(fileManager: fileManager) else {
             return false
         }
 
-        let hasTokens = fileManager.fileExists(atPath: modelDir.appendingPathComponent("tokens.txt").path)
-        let candidates = [
-            "model.int8.onnx",
-            "model.onnx",
-            "sense-voice.onnx",
-            "sense-voice-int8.onnx"
-        ]
-        let hasModel = candidates.contains { fileManager.fileExists(atPath: modelDir.appendingPathComponent($0).path) }
-
-        return hasTokens && hasModel
+        switch backend {
+        case .sherpaOnnx:
+            let hasTokens = fileManager.fileExists(atPath: modelDir.appendingPathComponent("tokens.txt").path)
+            let candidates = [
+                "model.int8.onnx",
+                "model.onnx",
+                "sense-voice.onnx",
+                "sense-voice-int8.onnx"
+            ]
+            let hasModel = candidates.contains { fileManager.fileExists(atPath: modelDir.appendingPathComponent($0).path) }
+            return hasTokens && hasModel
+        case .ggmlMetal:
+            let candidates = [
+                "sense-voice-small-q4_k.gguf",
+                "sense-voice-small-q8_0.gguf",
+                "sense-voice-small-f16.gguf",
+                "gguf-fp16-sense-voice-small.bin",
+                "gguf-fp32-sense-voice-small.bin"
+            ]
+            return candidates.contains { fileManager.fileExists(atPath: modelDir.appendingPathComponent($0).path) }
+        case .coreML:
+            return false
+        }
     }
 
     private static func isQwenInstalled(fileManager: FileManager) -> Bool {
@@ -403,6 +495,7 @@ final class ModelManager: ObservableObject {
     }
 
     private func downloadSenseVoiceModel(
+        for backend: SenseVoiceBackend,
         progressHandler: @escaping @Sendable (Double, String) -> Void
     ) async throws {
         let modelFolder = try Self.senseVoiceModelDirectoryURL(fileManager: fileManager)
@@ -410,22 +503,39 @@ final class ModelManager: ObservableObject {
             try fileManager.createDirectory(at: modelFolder, withIntermediateDirectories: true)
         }
 
-        let destinationModelURL = modelFolder.appendingPathComponent("model.int8.onnx")
-        let destinationTokensURL = modelFolder.appendingPathComponent("tokens.txt")
+        switch backend {
+        case .sherpaOnnx:
+            let destinationModelURL = modelFolder.appendingPathComponent("model.int8.onnx")
+            let destinationTokensURL = modelFolder.appendingPathComponent("tokens.txt")
 
-        progressHandler(0.05, "Downloading SenseVoice model...")
-        let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceModelDownloadURL)
-        if fileManager.fileExists(atPath: destinationModelURL.path) {
-            try fileManager.removeItem(at: destinationModelURL)
-        }
-        try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
+            progressHandler(0.05, "Downloading SenseVoice ONNX model...")
+            let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceModelDownloadURL)
+            if fileManager.fileExists(atPath: destinationModelURL.path) {
+                try fileManager.removeItem(at: destinationModelURL)
+            }
+            try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
 
-        progressHandler(0.92, "Downloading SenseVoice vocabulary...")
-        let (temporaryTokensURL, _) = try await URLSession.shared.download(from: Self.senseVoiceTokensDownloadURL)
-        if fileManager.fileExists(atPath: destinationTokensURL.path) {
-            try fileManager.removeItem(at: destinationTokensURL)
+            progressHandler(0.92, "Downloading SenseVoice vocabulary...")
+            let (temporaryTokensURL, _) = try await URLSession.shared.download(from: Self.senseVoiceTokensDownloadURL)
+            if fileManager.fileExists(atPath: destinationTokensURL.path) {
+                try fileManager.removeItem(at: destinationTokensURL)
+            }
+            try fileManager.moveItem(at: temporaryTokensURL, to: destinationTokensURL)
+        case .ggmlMetal:
+            let destinationModelURL = modelFolder.appendingPathComponent("sense-voice-small-q4_k.gguf")
+            progressHandler(0.05, "Downloading SenseVoice GGUF model...")
+            let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceGGUFDownloadURL)
+            if fileManager.fileExists(atPath: destinationModelURL.path) {
+                try fileManager.removeItem(at: destinationModelURL)
+            }
+            try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
+        case .coreML:
+            throw NSError(
+                domain: "ModelManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The unofficial SenseVoice Core ML backend is not implemented yet."]
+            )
         }
-        try fileManager.moveItem(at: temporaryTokensURL, to: destinationTokensURL)
 
         progressHandler(1.0, "SenseVoice ready.")
     }

@@ -50,6 +50,10 @@ jobs:
             -o "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2"
           tar -xjf "$RUNNER_TEMP/sherpa-onnx-ios-no-tts.tar.bz2" -C Vendor/SherpaOnnx
 
+      - name: Build SenseVoice ggml iOS runtime
+        run: |
+          bash scripts/build-sensevoice-ggml-ios.sh
+
       - name: Build app for device
         run: |
           mkdir -p "$DERIVED_DATA_PATH" "$CLONED_SOURCE_PACKAGES_PATH"

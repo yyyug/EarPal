@@ -31,6 +31,7 @@
 		B10000010000000000000016 /* SenseVoiceASRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000019 /* SenseVoiceASRService.swift */; };
 		B10000010000000000000017 /* sherpa-onnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10001010000000000000020 /* sherpa-onnx.xcframework */; };
 		B10000010000000000000018 /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10001010000000000000021 /* onnxruntime.xcframework */; };
+		B10000010000000000000019 /* SenseVoiceGGML.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10001010000000000000024 /* SenseVoiceGGML.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +58,7 @@
 		B10001010000000000000020 /* sherpa-onnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "SherpaOnnx/build-ios-no-tts/sherpa-onnx.xcframework"; sourceTree = "<group>"; };
 		B10001010000000000000021 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "SherpaOnnx/build-ios-no-tts/ios-onnxruntime/1.17.1/onnxruntime.xcframework"; sourceTree = "<group>"; };
 		B10001010000000000000022 /* EarPal-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EarPal-Bridging-Header.h"; sourceTree = "<group>"; };
+		B10001010000000000000024 /* SenseVoiceGGML.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "SenseVoiceGGML/output/SenseVoiceGGML.xcframework"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -65,6 +67,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B10000010000000000000011 /* AudioCommon in Frameworks */,
+				B10000010000000000000019 /* SenseVoiceGGML.xcframework in Frameworks */,
 				B10000010000000000000018 /* onnxruntime.xcframework in Frameworks */,
 				B1000001000000000000000F /* ParakeetASR in Frameworks */,
 				B10000010000000000000010 /* Qwen3ASR in Frameworks */,
@@ -157,6 +160,7 @@
 			children = (
 				B10001010000000000000020 /* sherpa-onnx.xcframework */,
 				B10001010000000000000021 /* onnxruntime.xcframework */,
+				B10001010000000000000024 /* SenseVoiceGGML.xcframework */,
 			);
 			path = Vendor;
 			sourceTree = "<group>";

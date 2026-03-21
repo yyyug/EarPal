@@ -189,6 +189,9 @@ final class LiveTranslateViewModel: ObservableObject {
                 statusMessage = "Loading \(modelManager.selectedASREngine.displayName)..."
                 let session = try await localASRService.makeStreamingSession(
                     engine: modelManager.selectedASREngine,
+                    sourceLanguageID: sourceLanguage.id,
+                    senseVoiceLanguage: modelManager.selectedSenseVoiceLanguage,
+                    senseVoiceBackend: modelManager.selectedSenseVoiceBackend,
                     progressHandler: { [weak self] _, status in
                         Task { @MainActor in
                             self?.statusMessage = status

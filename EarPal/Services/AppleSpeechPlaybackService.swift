@@ -12,7 +12,7 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
         var id: String { identifier }
 
         var accessibilityLabel: String {
-            qualityDescription.isEmpty ? displayName : "\(displayName), \(qualityDescription)"
+            displayName
         }
     }
 
@@ -114,17 +114,55 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
 
     private func defaultVoice(for languageID: String, candidates: [AVSpeechSynthesisVoice]) -> AVSpeechSynthesisVoice? {
         AVSpeechSynthesisVoice(language: languageID)
+            ?? candidates.first(where: { $0.quality == .premium })
             ?? candidates.first(where: { $0.quality == .enhanced })
             ?? candidates.first
     }
 
     private func voiceDisplayName(for voice: AVSpeechSynthesisVoice) -> String {
-        let components = voice.identifier
+        let baseDisplayName = voice.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? fallbackVoiceName(for: voice)
+            : voice.name
+
+        var suffixParts: [String] = []
+
+        let localeSuffix = localeDisplaySuffix(for: voice.language)
+        if !localeSuffix.isEmpty {
+            suffixParts.append(localeSuffix)
+        }
+
+        let quality = qualityDescription(for: voice)
+        if !quality.isEmpty {
+            suffixParts.append(quality)
+        }
+
+        guard !suffixParts.isEmpty else {
+            return baseDisplayName
+        }
+
+        return "\(baseDisplayName) (\(suffixParts.joined(separator: ", ")))"
+    }
+
+    private func qualityDescription(for voice: AVSpeechSynthesisVoice) -> String {
+        switch voice.quality {
+        case .premium:
+            return "Premium"
+        case .enhanced:
+            return "Enhanced"
+        case .default:
+            return "Standard"
+        @unknown default:
+            return "Standard"
+        }
+    }
+
+    private func fallbackVoiceName(for voice: AVSpeechSynthesisVoice) -> String {
+        let baseName = voice.identifier
             .split(separator: ".")
             .map(String.init)
             .filter { !$0.isEmpty }
+            .last ?? voice.identifier
 
-        let baseName = components.last ?? voice.identifier
         let normalized = baseName
             .replacingOccurrences(of: "-", with: " ")
             .replacingOccurrences(of: "_", with: " ")
@@ -133,29 +171,12 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
             return voice.identifier
         }
 
-        let baseDisplayName = normalized
+        return normalized
             .split(separator: " ")
             .map { word in
                 word.isEmpty ? "" : word.prefix(1).uppercased() + word.dropFirst()
             }
             .joined(separator: " ")
-
-        let localeSuffix = localeDisplaySuffix(for: voice.language)
-        if localeSuffix.isEmpty {
-            return baseDisplayName
-        }
-        return "\(baseDisplayName) (\(localeSuffix))"
-    }
-
-    private func qualityDescription(for voice: AVSpeechSynthesisVoice) -> String {
-        switch voice.quality {
-        case .enhanced:
-            return "Enhanced"
-        case .default:
-            return "Default quality"
-        @unknown default:
-            return ""
-        }
     }
 
     private func prepareAudioSessionForSpeech() {

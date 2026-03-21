@@ -237,24 +237,10 @@ private struct SettingsSheet: View {
                     } else {
                         Picker("Voice", selection: $viewModel.selectedVoiceIdentifier) {
                             ForEach(viewModel.availableVoices) { voice in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(voice.displayName)
-                                    if !voice.qualityDescription.isEmpty {
-                                        Text(voice.qualityDescription)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .tag(voice.identifier)
+                                Text(voice.displayName)
+                                    .tag(voice.identifier)
                             }
                         }
-                    }
-
-                    if let selectedVoice = viewModel.availableVoices.first(where: { $0.identifier == viewModel.selectedVoiceIdentifier }) {
-                        Text("Identifier: \(selectedVoice.identifier)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -263,6 +249,49 @@ private struct SettingsSheet: View {
                         Text(speechRatePercentageText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                if modelManager.selectedASREngine == .senseVoice {
+                    Section("SenseVoice") {
+                        Picker(
+                            "Backend",
+                            selection: Binding(
+                                get: { modelManager.selectedSenseVoiceBackend },
+                                set: { modelManager.selectSenseVoiceBackend($0) }
+                            )
+                        ) {
+                            ForEach(SenseVoiceBackend.allCases) { backend in
+                                Text(backend.displayName)
+                                    .tag(backend)
+                            }
+                        }
+
+                        Text(modelManager.selectedSenseVoiceBackendStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Picker(
+                            "Recognition Language",
+                            selection: Binding(
+                                get: { modelManager.selectedSenseVoiceLanguage },
+                                set: { modelManager.selectSenseVoiceLanguage($0) }
+                            )
+                        ) {
+                            ForEach(SenseVoiceLanguageOption.allCases) { option in
+                                Text(option.displayName)
+                                    .tag(option)
+                            }
+                        }
+
+                        Text("Match Source Language follows the current From language. Languages outside SenseVoice's bundled set fall back to auto detection.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if let referenceURL = senseVoiceBackendReferenceURL {
+                            Link("Open backend reference", destination: referenceURL)
+                                .font(.caption)
+                        }
                     }
                 }
 
@@ -283,6 +312,17 @@ private struct SettingsSheet: View {
     private var speechRatePercentageText: String {
         let normalized = ((viewModel.speechRate - 0.2) / 0.6).clamped(to: 0...1)
         return "\(Int((normalized * 100).rounded()))%"
+    }
+
+    private var senseVoiceBackendReferenceURL: URL? {
+        switch modelManager.selectedSenseVoiceBackend {
+        case .sherpaOnnx:
+            return ModelManager.senseVoiceRepositoryURL
+        case .ggmlMetal:
+            return ModelManager.senseVoiceGGUFRepositoryURL
+        case .coreML:
+            return ModelManager.senseVoiceCoreMLRepositoryURL
+        }
     }
 }
 

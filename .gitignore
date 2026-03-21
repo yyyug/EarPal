@@ -5,3 +5,5 @@ artifacts/
 xcuserdata/
 Pods/
 EarPal.xcworkspace/
+Vendor/SenseVoiceGGML/build/
+Vendor/SenseVoiceGGML/source/
