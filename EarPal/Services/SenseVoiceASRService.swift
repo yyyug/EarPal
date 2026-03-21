@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import Accelerate
+import CoreML
 
 protocol SenseVoiceRuntime: Sendable {
     func transcribe(audio: [Float]) throws -> String
@@ -12,7 +14,9 @@ enum SenseVoiceASRServiceError: LocalizedError {
     case emptyRecognizerStream
     case ggmlRuntimeUnavailable
     case ggmlModelMissing
-    case coreMLRuntimeUnavailable
+    case coreMLModelMissing
+    case coreMLAssetsMissing
+    case coreMLOutputInvalid
 
     var errorDescription: String? {
         switch self {
@@ -26,8 +30,12 @@ enum SenseVoiceASRServiceError: LocalizedError {
             return "The ggml + Metal SenseVoice runtime is unavailable in this build."
         case .ggmlModelMissing:
             return "The SenseVoice GGUF model is missing. Download the ggml + Metal backend assets from Models & Engines, then try again."
-        case .coreMLRuntimeUnavailable:
-            return "The unofficial Core ML SenseVoice backend is not linked into this build yet."
+        case .coreMLModelMissing:
+            return "The SenseVoice Core ML model is missing. Install an extracted SenseVoiceSmall.mlmodelc bundle in Models & Engines, then try again."
+        case .coreMLAssetsMissing:
+            return "The SenseVoice Core ML support assets are missing. Install the SentencePiece and CMVN files for the Core ML backend, then try again."
+        case .coreMLOutputInvalid:
+            return "SenseVoice Core ML returned an unexpected output shape."
         }
     }
 }
@@ -62,7 +70,22 @@ struct SenseVoiceASRService {
 
             return try GGMLSenseVoiceRuntime(modelURL: modelURL, language: language)
         case .coreML:
-            throw SenseVoiceASRServiceError.coreMLRuntimeUnavailable
+            let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
+            guard let modelURL = resolveCoreMLModelDirectory(in: modelDirectory) else {
+                throw SenseVoiceASRServiceError.coreMLModelMissing
+            }
+
+            guard let sentencePieceURL = resolveSentencePieceURL(in: modelDirectory),
+                  let cmvnURL = resolveCMVNURL(in: modelDirectory) else {
+                throw SenseVoiceASRServiceError.coreMLAssetsMissing
+            }
+
+            return try CoreMLSenseVoiceRuntime(
+                modelURL: modelURL,
+                sentencePieceURL: sentencePieceURL,
+                cmvnURL: cmvnURL,
+                language: language
+            )
         }
     }
 
@@ -91,6 +114,58 @@ struct SenseVoiceASRService {
             "sense-voice-small-f16.gguf",
             "gguf-fp16-sense-voice-small.bin",
             "gguf-fp32-sense-voice-small.bin"
+        ]
+
+        for candidate in candidates {
+            let url = directory.appendingPathComponent(candidate)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private func resolveCoreMLModelDirectory(in directory: URL) -> URL? {
+        let candidates = [
+            directory.appendingPathComponent("SenseVoiceSmall.mlmodelc", isDirectory: true),
+            directory.appendingPathComponent("coreml/SenseVoiceSmall.mlmodelc", isDirectory: true)
+        ]
+
+        for candidate in candidates {
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: candidate.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    private func resolveSentencePieceURL(in directory: URL) -> URL? {
+        let candidates = [
+            "spm",
+            "chn_jpn_yue_eng_ko_spectok.bpe.model",
+            "coreml/spm",
+            "coreml/chn_jpn_yue_eng_ko_spectok.bpe.model"
+        ]
+
+        for candidate in candidates {
+            let url = directory.appendingPathComponent(candidate)
+            if fileManager.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private func resolveCMVNURL(in directory: URL) -> URL? {
+        let candidates = [
+            "cmvn_am.mvn",
+            "am.mvn",
+            "coreml/cmvn_am.mvn",
+            "coreml/am.mvn"
         ]
 
         for candidate in candidates {
@@ -160,6 +235,464 @@ private final class GGMLSenseVoiceRuntime: SenseVoiceRuntime {
 
     func unload() {
         recognizer.unload()
+    }
+}
+
+private final class CoreMLSenseVoiceRuntime: SenseVoiceRuntime {
+    private let model: MLModel
+    private let decoder: SentencePieceDecoder
+    private let featureExtractor: SenseVoiceCoreMLFeatureExtractor
+    private let languageID: Int32
+    private let textnormID: Int32
+
+    init(modelURL: URL, sentencePieceURL: URL, cmvnURL: URL, language: String) throws {
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .all
+        self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
+        self.decoder = try SentencePieceDecoder(modelPath: sentencePieceURL.path)
+        let cmvn = try SenseVoiceCMVN.load(from: cmvnURL)
+        self.featureExtractor = SenseVoiceCoreMLFeatureExtractor(cmvn: cmvn)
+        self.languageID = Self.languageID(for: language)
+        self.textnormID = 14
+    }
+
+    func transcribe(audio: [Float]) throws -> String {
+        guard !audio.isEmpty else { return "" }
+
+        let extracted = try featureExtractor.extract(audio)
+        let features = try makeFeatureArray(from: extracted.frames)
+        let lengths = try makeVectorArray([Int32(extracted.frameCount)], dataType: .int32)
+        let language = try makeVectorArray([languageID], dataType: .int32)
+        let textnorm = try makeVectorArray([textnormID], dataType: .int32)
+
+        let inputs = try MLDictionaryFeatureProvider(dictionary: [
+            "speech": MLFeatureValue(multiArray: features),
+            "speech_lengths": MLFeatureValue(multiArray: lengths),
+            "language": MLFeatureValue(multiArray: language),
+            "textnorm": MLFeatureValue(multiArray: textnorm)
+        ])
+
+        let outputs = try model.prediction(from: inputs)
+        guard let logits = outputs.featureValue(for: "ctc_logits")?.multiArrayValue,
+              let encoderOutLens = outputs.featureValue(for: "encoder_out_lens")?.multiArrayValue else {
+            throw SenseVoiceASRServiceError.coreMLOutputInvalid
+        }
+
+        let frameCount = max(0, min(extracted.frameCount, readFirstInt(from: encoderOutLens)))
+        let tokenIDs = try greedyDecode(logits: logits, frameCount: frameCount)
+        return decoder.decode(tokenIDs)
+    }
+
+    func unload() {}
+
+    private func makeFeatureArray(from frames: [Float]) throws -> MLMultiArray {
+        let frameCount = frames.count / SenseVoiceCoreMLFeatureExtractor.featureDimension
+        let array = try MLMultiArray(
+            shape: [1, frameCount as NSNumber, SenseVoiceCoreMLFeatureExtractor.featureDimension as NSNumber],
+            dataType: .float32
+        )
+        let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: frames.count)
+        frames.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            pointer.assign(from: baseAddress, count: frames.count)
+        }
+        return array
+    }
+
+    private func makeVectorArray(_ values: [Int32], dataType: MLMultiArrayDataType) throws -> MLMultiArray {
+        let array = try MLMultiArray(shape: [values.count as NSNumber], dataType: dataType)
+        let pointer = array.dataPointer.bindMemory(to: Int32.self, capacity: values.count)
+        values.withUnsafeBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            pointer.assign(from: baseAddress, count: values.count)
+        }
+        return array
+    }
+
+    private func readFirstInt(from array: MLMultiArray) -> Int {
+        switch array.dataType {
+        case .int32:
+            return Int(array.dataPointer.bindMemory(to: Int32.self, capacity: 1).pointee)
+        case .int64:
+            return Int(array.dataPointer.bindMemory(to: Int64.self, capacity: 1).pointee)
+        default:
+            return Int(array[0].intValue)
+        }
+    }
+
+    private func greedyDecode(logits: MLMultiArray, frameCount: Int) throws -> [Int32] {
+        let shape = logits.shape.map(\.intValue)
+        let dimensions = shape.filter { $0 > 1 }
+        guard !dimensions.isEmpty else {
+            throw SenseVoiceASRServiceError.coreMLOutputInvalid
+        }
+
+        let vocabAxis = shape.enumerated().max(by: { $0.element < $1.element })?.offset ?? (shape.count - 1)
+        let nonBatchAxes = shape.enumerated().filter { $0.offset != vocabAxis && $0.element > 1 }.map(\.offset)
+        let timeAxis = nonBatchAxes.last ?? (shape.count >= 2 ? shape.count - 2 : 0)
+        let timeDimension = shape[timeAxis]
+        let vocabDimension = shape[vocabAxis]
+        let strides = logits.strides.map(\.intValue)
+
+        guard vocabDimension > 1, timeDimension > 0 else {
+            throw SenseVoiceASRServiceError.coreMLOutputInvalid
+        }
+
+        let validFrames = min(frameCount, timeDimension)
+        let pointer = logits.dataPointer.bindMemory(to: Float.self, capacity: logits.count)
+        var decoded = [Int32]()
+        decoded.reserveCapacity(validFrames)
+        var previousToken: Int32 = -1
+
+        for time in 0..<validFrames {
+            var bestToken = 0
+            var bestScore = -Float.greatestFiniteMagnitude
+            for vocab in 0..<vocabDimension {
+                let index = linearIndex(
+                    for: shape.count,
+                    timeAxis: timeAxis,
+                    time: time,
+                    vocabAxis: vocabAxis,
+                    vocab: vocab
+                )
+                let offset = zip(index, strides).reduce(0) { $0 + ($1.0 * $1.1) }
+                let score = pointer[offset]
+                if score > bestScore {
+                    bestScore = score
+                    bestToken = vocab
+                }
+            }
+
+            let token = Int32(bestToken)
+            guard token != 0, token != previousToken else {
+                previousToken = token
+                continue
+            }
+
+            decoded.append(token)
+            previousToken = token
+        }
+
+        if decoded.count > 4 {
+            return Array(decoded.dropFirst(4))
+        }
+        return decoded
+    }
+
+    private func linearIndex(
+        for rank: Int,
+        timeAxis: Int,
+        time: Int,
+        vocabAxis: Int,
+        vocab: Int
+    ) -> [Int] {
+        var result = Array(repeating: 0, count: rank)
+        result[timeAxis] = time
+        result[vocabAxis] = vocab
+        return result
+    }
+
+    private static func languageID(for language: String) -> Int32 {
+        switch language.lowercased() {
+        case "zh":
+            return 3
+        case "en":
+            return 4
+        case "yue":
+            return 7
+        case "ja":
+            return 11
+        case "ko":
+            return 12
+        default:
+            return 0
+        }
+    }
+}
+
+private struct SenseVoiceCMVN {
+    let means: [Float]
+    let vars: [Float]
+
+    static func load(from url: URL) throws -> SenseVoiceCMVN {
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        let bracketMatches = contents.matches(of: #/\[(.*?)\]/#)
+        guard bracketMatches.count >= 2 else {
+            throw SenseVoiceASRServiceError.coreMLAssetsMissing
+        }
+
+        let means = parseArray(String(bracketMatches[0].output.1))
+        let vars = parseArray(String(bracketMatches[1].output.1))
+        guard means.count == SenseVoiceCoreMLFeatureExtractor.featureDimension,
+              vars.count == SenseVoiceCoreMLFeatureExtractor.featureDimension else {
+            throw SenseVoiceASRServiceError.coreMLAssetsMissing
+        }
+
+        return SenseVoiceCMVN(means: means, vars: vars)
+    }
+
+    private static func parseArray(_ string: String) -> [Float] {
+        string
+            .split(whereSeparator: \.isWhitespace)
+            .compactMap { Float($0) }
+    }
+}
+
+private struct SenseVoiceCoreMLFeatureExtractor {
+    static let sampleRate = 16_000
+    static let frameSize = 400
+    static let frameStep = 160
+    static let featureDimension = 560
+    private static let lfrM = 7
+    private static let lfrN = 6
+    private static let melBins = 80
+    private static let fftSize = 512
+    private static let fftBins = 256
+    private static let logFloor: Float = 1.19e-7
+
+    struct Result {
+        let frames: [Float]
+        let frameCount: Int
+    }
+
+    private let cmvn: SenseVoiceCMVN
+    private let fftSetup: FFTSetup
+    private let hammingWindow: [Float]
+
+    init(cmvn: SenseVoiceCMVN) {
+        self.cmvn = cmvn
+        self.hammingWindow = (0..<Self.frameSize).map { i in
+            0.54 - 0.46 * cos((2 * .pi * Float(i)) / Float(Self.frameSize))
+        }
+        guard let fftSetup = vDSP_create_fftsetup(vDSP_Length(log2(Float(Self.fftSize))), FFTRadix(kFFTRadix2)) else {
+            fatalError("Failed to create SenseVoice FFT setup")
+        }
+        self.fftSetup = fftSetup
+    }
+
+    func extract(_ audio: [Float]) throws -> Result {
+        let samples = audio.count >= Self.frameSize ? audio : audio + Array(repeating: 0, count: Self.frameSize - audio.count)
+        let frameCount = max(1, 1 + ((samples.count - Self.frameSize) / Self.frameStep))
+        var melFrames = [Float](repeating: 0, count: frameCount * Self.melBins)
+
+        var splitReal = [Float](repeating: 0, count: Self.fftSize / 2)
+        var splitImag = [Float](repeating: 0, count: Self.fftSize / 2)
+        var padded = [Float](repeating: 0, count: Self.fftSize)
+        let filterBank = SenseVoiceCoreMLFilterBank.values
+
+        for frame in 0..<frameCount {
+            let start = frame * Self.frameStep
+            let available = min(Self.frameSize, samples.count - start)
+            for index in 0..<Self.fftSize {
+                padded[index] = 0
+            }
+            for i in 0..<available {
+                padded[i] = samples[start + i]
+            }
+
+            let mean = padded[..<Self.frameSize].reduce(0, +) / Float(Self.frameSize)
+            for i in 0..<Self.frameSize {
+                padded[i] -= mean
+            }
+
+            for i in stride(from: Self.frameSize - 1, through: 1, by: -1) {
+                padded[i] -= 0.97 * padded[i - 1]
+            }
+            padded[0] -= 0.97 * padded[0]
+
+            padded.withUnsafeMutableBufferPointer { paddedBuffer in
+                hammingWindow.withUnsafeBufferPointer { windowBuffer in
+                    vDSP_vmul(
+                        paddedBuffer.baseAddress!,
+                        1,
+                        windowBuffer.baseAddress!,
+                        1,
+                        paddedBuffer.baseAddress!,
+                        1,
+                        vDSP_Length(Self.frameSize)
+                    )
+                }
+            }
+            for i in 0..<(Self.fftSize / 2) {
+                splitReal[i] = padded[2 * i]
+                splitImag[i] = padded[2 * i + 1]
+            }
+
+            splitReal.withUnsafeMutableBufferPointer { realBuffer in
+                splitImag.withUnsafeMutableBufferPointer { imagBuffer in
+                    var complex = DSPSplitComplex(realp: realBuffer.baseAddress!, imagp: imagBuffer.baseAddress!)
+                    vDSP_fft_zrip(fftSetup, &complex, 1, vDSP_Length(log2(Float(Self.fftSize))), FFTDirection(kFFTDirection_Forward))
+                }
+            }
+
+            var power = [Float](repeating: 0, count: Self.fftBins)
+            for bin in 0..<Self.fftBins {
+                power[bin] = splitReal[bin] * splitReal[bin] + splitImag[bin] * splitImag[bin]
+            }
+
+            for mel in 0..<Self.melBins {
+                var sum: Float = 0
+                let filterOffset = mel * Self.fftBins
+                for bin in 0..<Self.fftBins {
+                    sum += power[bin] * filterBank[filterOffset + bin]
+                }
+                melFrames[frame * Self.melBins + mel] = log(max(sum, Self.logFloor))
+            }
+        }
+
+        let stacked = applyLFRAndCMVN(to: melFrames, frameCount: frameCount)
+        return Result(frames: stacked, frameCount: stacked.count / Self.featureDimension)
+    }
+
+    private func applyLFRAndCMVN(to melFrames: [Float], frameCount: Int) -> [Float] {
+        let stackedFrameCount = Int(ceil(Double(frameCount) / Double(Self.lfrN)))
+        let leftPad = (Self.lfrM - 1) / 2
+        let extendedFrameCount = frameCount + leftPad
+        var output = [Float](repeating: 0, count: stackedFrameCount * Self.featureDimension)
+
+        func frame(_ index: Int) -> ArraySlice<Float> {
+            let clamped = min(max(index, 0), frameCount - 1)
+            let start = clamped * Self.melBins
+            return melFrames[start..<(start + Self.melBins)]
+        }
+
+        for stackedIndex in 0..<stackedFrameCount {
+            var merged = [Float]()
+            merged.reserveCapacity(Self.featureDimension)
+
+            if stackedIndex == 0 {
+                for _ in 0..<leftPad {
+                    merged.append(contentsOf: frame(0))
+                }
+                for source in 0..<(Self.lfrM - leftPad) {
+                    merged.append(contentsOf: frame(source))
+                }
+            } else {
+                let startFrame = stackedIndex * Self.lfrN - leftPad
+                if Self.lfrM <= extendedFrameCount - stackedIndex * Self.lfrN {
+                    for source in startFrame..<(startFrame + Self.lfrM) {
+                        merged.append(contentsOf: frame(source))
+                    }
+                } else {
+                    let available = frameCount - stackedIndex * Self.lfrN
+                    for source in 0..<max(available, 0) {
+                        merged.append(contentsOf: frame(startFrame + source))
+                    }
+                    for _ in 0..<(Self.lfrM - max(available, 0)) {
+                        merged.append(contentsOf: frame(frameCount - 1))
+                    }
+                }
+            }
+
+            let outputOffset = stackedIndex * Self.featureDimension
+            for featureIndex in 0..<Self.featureDimension {
+                output[outputOffset + featureIndex] = (merged[featureIndex] + cmvn.means[featureIndex]) * cmvn.vars[featureIndex]
+            }
+        }
+
+        return output
+    }
+}
+
+private struct SentencePieceDecoder: Sendable {
+    private let vocabulary: [Int: String]
+
+    init(modelPath: String) throws {
+        let data = try Data(contentsOf: URL(fileURLWithPath: modelPath))
+        var pieces = [String]()
+        var offset = 0
+
+        while offset < data.count {
+            let (fieldNumber, wireType, newOffset) = Self.readTag(data: data, offset: offset)
+            offset = newOffset
+
+            if fieldNumber == 1 && wireType == 2 {
+                let (length, bodyOffset) = Self.readVarint(data: data, offset: offset)
+                offset = bodyOffset
+                let end = offset + length
+                var piece: String?
+                var subOffset = offset
+
+                while subOffset < end {
+                    let (subFieldNumber, subWireType, subNewOffset) = Self.readTag(data: data, offset: subOffset)
+                    subOffset = subNewOffset
+
+                    if subFieldNumber == 1 && subWireType == 2 {
+                        let (stringLength, stringOffset) = Self.readVarint(data: data, offset: subOffset)
+                        subOffset = stringOffset
+                        if let string = String(data: data[subOffset..<(subOffset + stringLength)], encoding: .utf8) {
+                            piece = string
+                        }
+                        subOffset += stringLength
+                    } else {
+                        subOffset = Self.skipField(data: data, offset: subOffset, wireType: subWireType)
+                    }
+                }
+
+                pieces.append(piece ?? "")
+                offset = end
+            } else {
+                offset = Self.skipField(data: data, offset: offset, wireType: wireType)
+            }
+        }
+
+        var vocabulary = [Int: String]()
+        vocabulary.reserveCapacity(pieces.count)
+        for (index, piece) in pieces.enumerated() {
+            vocabulary[index] = piece
+        }
+        self.vocabulary = vocabulary
+    }
+
+    func decode(_ tokens: [Int32]) -> String {
+        var text = ""
+        for token in tokens {
+            guard let piece = vocabulary[Int(token)] else { continue }
+            if piece.hasPrefix("<") && piece.hasSuffix(">") {
+                continue
+            }
+            text += piece
+        }
+        return text.replacingOccurrences(of: "\u{2581}", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func readVarint(data: Data, offset: Int) -> (Int, Int) {
+        var result = 0
+        var shift = 0
+        var current = offset
+
+        while current < data.count {
+            let byte = Int(data[current])
+            current += 1
+            result |= (byte & 0x7F) << shift
+            if byte & 0x80 == 0 {
+                break
+            }
+            shift += 7
+        }
+
+        return (result, current)
+    }
+
+    private static func readTag(data: Data, offset: Int) -> (Int, Int, Int) {
+        let (tag, newOffset) = readVarint(data: data, offset: offset)
+        return (tag >> 3, tag & 0x07, newOffset)
+    }
+
+    private static func skipField(data: Data, offset: Int, wireType: Int) -> Int {
+        switch wireType {
+        case 0:
+            return readVarint(data: data, offset: offset).1
+        case 1:
+            return offset + 8
+        case 2:
+            let (length, newOffset) = readVarint(data: data, offset: offset)
+            return newOffset + length
+        case 5:
+            return offset + 4
+        default:
+            return data.count
+        }
     }
 }
 

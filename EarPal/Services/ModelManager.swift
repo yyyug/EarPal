@@ -109,7 +109,9 @@ final class ModelManager: ObservableObject {
                 ? "Installed and ready with the ggml + Metal runtime."
                 : "Download the SenseVoice GGUF model to use this backend."
         case .coreML:
-            return "Experimental. Unofficial Core ML conversion still needs a native Core ML inference adapter and validation."
+            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .coreML)
+                ? "Installed and ready with the experimental Core ML runtime."
+                : "Experimental. Install an extracted SenseVoiceSmall.mlmodelc bundle plus the SentencePiece and CMVN assets to use this backend."
         }
     }
 
@@ -266,7 +268,9 @@ final class ModelManager: ObservableObject {
                 ? "SenseVoice ggml + Metal backend is ready for offline transcription."
                 : "Downloads the SenseVoice GGUF model for the ggml + Metal runtime."
         case .coreML:
-            models[index].statusNote = "The unofficial Core ML backend is still experimental and not available yet."
+            models[index].statusNote = installed
+                ? "SenseVoice Core ML backend is ready for offline transcription."
+                : "Experimental. Manual install required: extracted SenseVoiceSmall.mlmodelc, spm, and cmvn_am.mvn."
         }
     }
 
@@ -423,7 +427,30 @@ final class ModelManager: ObservableObject {
             ]
             return candidates.contains { fileManager.fileExists(atPath: modelDir.appendingPathComponent($0).path) }
         case .coreML:
-            return false
+            let modelCandidates = [
+                modelDir.appendingPathComponent("SenseVoiceSmall.mlmodelc"),
+                modelDir.appendingPathComponent("coreml/SenseVoiceSmall.mlmodelc")
+            ]
+            let sentencePieceCandidates = [
+                modelDir.appendingPathComponent("spm"),
+                modelDir.appendingPathComponent("chn_jpn_yue_eng_ko_spectok.bpe.model"),
+                modelDir.appendingPathComponent("coreml/spm"),
+                modelDir.appendingPathComponent("coreml/chn_jpn_yue_eng_ko_spectok.bpe.model")
+            ]
+            let cmvnCandidates = [
+                modelDir.appendingPathComponent("cmvn_am.mvn"),
+                modelDir.appendingPathComponent("am.mvn"),
+                modelDir.appendingPathComponent("coreml/cmvn_am.mvn"),
+                modelDir.appendingPathComponent("coreml/am.mvn")
+            ]
+
+            let hasModel = modelCandidates.contains {
+                var isDirectory: ObjCBool = false
+                return fileManager.fileExists(atPath: $0.path, isDirectory: &isDirectory) && isDirectory.boolValue
+            }
+            let hasSentencePiece = sentencePieceCandidates.contains { fileManager.fileExists(atPath: $0.path) }
+            let hasCMVN = cmvnCandidates.contains { fileManager.fileExists(atPath: $0.path) }
+            return hasModel && hasSentencePiece && hasCMVN
         }
     }
 
@@ -533,7 +560,10 @@ final class ModelManager: ObservableObject {
             throw NSError(
                 domain: "ModelManager",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "The unofficial SenseVoice Core ML backend is not implemented yet."]
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "The experimental SenseVoice Core ML backend currently supports manual installs only. Place an extracted SenseVoiceSmall.mlmodelc bundle, spm, and cmvn_am.mvn in Application Support/EarPalModels/sensevoice."
+                ]
             )
         }
 
