@@ -5,4 +5,5 @@ target 'EarPal' do
 
   pod 'MediaPipeTasksGenAI'
   pod 'MediaPipeTasksGenAIC'
+  pod 'ZIPFoundation', '~> 0.9'
 end

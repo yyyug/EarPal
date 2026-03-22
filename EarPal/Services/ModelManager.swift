@@ -4,6 +4,7 @@ import Foundation
 import ParakeetASR
 import Qwen3ASR
 import SpeechVAD
+import ZIPFoundation
 
 @MainActor
 final class ModelManager: ObservableObject {
@@ -14,6 +15,9 @@ final class ModelManager: ObservableObject {
     static let senseVoiceGGUFRepositoryURL = URL(string: "https://huggingface.co/lovemefan/sense-voice-gguf")!
     static let senseVoiceGGUFDownloadURL = URL(string: "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf?download=true")!
     static let senseVoiceCoreMLRepositoryURL = URL(string: "https://huggingface.co/mefengl/SenseVoiceSmall-coreml")!
+    static let senseVoiceCoreMLZipDownloadURL = URL(string: "https://huggingface.co/mefengl/SenseVoiceSmall-coreml/resolve/main/coreml/SenseVoiceSmall.mlmodelc.zip?download=true")!
+    static let senseVoiceCoreMLSentencePieceDownloadURL = URL(string: "https://modelscope.cn/api/v1/models/iic/SenseVoiceSmall/repo?Revision=master&FilePath=chn_jpn_yue_eng_ko_spectok.bpe.model")!
+    static let senseVoiceCoreMLCMVNDownloadURL = URL(string: "https://modelscope.cn/api/v1/models/iic/SenseVoiceSmall/repo?Revision=master&FilePath=am.mvn")!
     static let qwen3ASRModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
     static let sileroVADModelID = SileroVADModel.defaultCoreMLModelId
     static let translateGemmaDownloadURL = URL(string: "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true")!
@@ -111,7 +115,7 @@ final class ModelManager: ObservableObject {
         case .coreML:
             return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .coreML)
                 ? "Installed and ready with the experimental Core ML runtime."
-                : "Experimental. Install an extracted SenseVoiceSmall.mlmodelc bundle plus the SentencePiece and CMVN assets to use this backend."
+                : "Download the SenseVoice Core ML model to use this backend."
         }
     }
 
@@ -145,6 +149,7 @@ final class ModelManager: ObservableObject {
                     }
                     await MainActor.run {
                         self.markInstalled(id: modelID, note: "Parakeet and live VAD downloaded to local cache.")
+                        self.select(asr: .parakeet)
                     }
                 case "sensevoice-asr":
                     try await downloadSenseVoiceModel(for: selectedSenseVoiceBackend) { [weak self] progress, status in
@@ -156,13 +161,14 @@ final class ModelManager: ObservableObject {
                         let note: String
                         switch self.selectedSenseVoiceBackend {
                         case .sherpaOnnx:
-                            note = "SenseVoice ONNX model downloaded to app storage."
+                            note = "Downloaded."
                         case .ggmlMetal:
-                            note = "SenseVoice GGUF model downloaded to app storage."
+                            note = "Downloaded."
                         case .coreML:
-                            note = "SenseVoice assets downloaded to app storage."
+                            note = "Downloaded."
                         }
                         self.markInstalled(id: modelID, note: note)
+                        self.select(asr: .senseVoice)
                     }
                 case "qwen3-asr":
                     let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
@@ -181,6 +187,7 @@ final class ModelManager: ObservableObject {
                     }
                     await MainActor.run {
                         self.markInstalled(id: modelID, note: "Qwen3-ASR and live VAD downloaded to local cache.")
+                        self.select(asr: .qwen3)
                     }
                 case "translate-gemma":
                     try await downloadTranslateGemmaModel { [weak self] progress, status in
@@ -261,16 +268,16 @@ final class ModelManager: ObservableObject {
         switch selectedSenseVoiceBackend {
         case .sherpaOnnx:
             models[index].statusNote = installed
-                ? "SenseVoice ONNX backend is ready for offline transcription."
-                : "Downloads the current sherpa-onnx SenseVoice int8 model to app storage."
+                ? "Ready."
+                : "Download"
         case .ggmlMetal:
             models[index].statusNote = installed
-                ? "SenseVoice ggml + Metal backend is ready for offline transcription."
-                : "Downloads the SenseVoice GGUF model for the ggml + Metal runtime."
+                ? "Ready."
+                : "Download"
         case .coreML:
             models[index].statusNote = installed
-                ? "SenseVoice Core ML backend is ready for offline transcription."
-                : "Experimental. Manual install required: extracted SenseVoiceSmall.mlmodelc, spm, and cmvn_am.mvn."
+                ? "Ready."
+                : "Download"
         }
     }
 
@@ -312,20 +319,6 @@ final class ModelManager: ObservableObject {
                 statusNote: "Available with iOS."
             ),
             InferenceModel(
-                id: "parakeet-asr",
-                displayName: "NVIDIA Parakeet",
-                task: .asr,
-                engineID: ASREngine.parakeet.rawValue,
-                supportsLanguages: ["en"],
-                sizeDescription: "~1.5 GB",
-                downloadURL: nil,
-                isBuiltIn: false,
-                isInstalled: parakeetInstalled,
-                isDownloading: false,
-                downloadProgress: parakeetInstalled ? 1 : 0,
-                statusNote: parakeetInstalled ? "Ready for offline transcription." : "Downloads CoreML weights for on-device ASR."
-            ),
-            InferenceModel(
                 id: "sensevoice-asr",
                 displayName: "SenseVoice",
                 task: .asr,
@@ -338,8 +331,22 @@ final class ModelManager: ObservableObject {
                 isDownloading: false,
                 downloadProgress: senseVoiceInstalled ? 1 : 0,
                 statusNote: senseVoiceInstalled
-                    ? "Ready for offline transcription."
-                    : "Downloads the currently selected SenseVoice backend assets to app storage."
+                    ? "Ready."
+                    : "Download"
+            ),
+            InferenceModel(
+                id: "parakeet-asr",
+                displayName: "NVIDIA Parakeet",
+                task: .asr,
+                engineID: ASREngine.parakeet.rawValue,
+                supportsLanguages: ["en"],
+                sizeDescription: "~1.5 GB",
+                downloadURL: nil,
+                isBuiltIn: false,
+                isInstalled: parakeetInstalled,
+                isDownloading: false,
+                downloadProgress: parakeetInstalled ? 1 : 0,
+                statusNote: parakeetInstalled ? "Ready." : "Download"
             ),
             InferenceModel(
                 id: "qwen3-asr",
@@ -353,7 +360,7 @@ final class ModelManager: ObservableObject {
                 isInstalled: qwenInstalled,
                 isDownloading: false,
                 downloadProgress: qwenInstalled ? 1 : 0,
-                statusNote: qwenInstalled ? "Ready for offline transcription." : "Downloads MLX weights for on-device ASR."
+                statusNote: qwenInstalled ? "Ready." : "Download"
             ),
             InferenceModel(
                 id: "apple-translate",
@@ -381,7 +388,7 @@ final class ModelManager: ObservableObject {
                 isInstalled: translateGemmaInstalled,
                 isDownloading: false,
                 downloadProgress: translateGemmaInstalled ? 1 : 0,
-                statusNote: translateGemmaInstalled ? "Ready for on-device translation." : "Downloads a Gemma .task model for on-device translation."
+                statusNote: translateGemmaInstalled ? "Ready." : "Download"
             )
         ]
     }
@@ -399,6 +406,7 @@ final class ModelManager: ObservableObject {
     private static func isSenseVoiceInstalled(fileManager: FileManager) -> Bool {
         isSenseVoiceInstalled(fileManager: fileManager, backend: .sherpaOnnx)
             || isSenseVoiceInstalled(fileManager: fileManager, backend: .ggmlMetal)
+            || isSenseVoiceInstalled(fileManager: fileManager, backend: .coreML)
     }
 
     private static func isSenseVoiceInstalled(fileManager: FileManager, backend: SenseVoiceBackend) -> Bool {
@@ -557,14 +565,48 @@ final class ModelManager: ObservableObject {
             }
             try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
         case .coreML:
-            throw NSError(
-                domain: "ModelManager",
-                code: 1,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "The experimental SenseVoice Core ML backend currently supports manual installs only. Place an extracted SenseVoiceSmall.mlmodelc bundle, spm, and cmvn_am.mvn in Application Support/EarPalModels/sensevoice."
-                ]
-            )
+            let destinationArchiveURL = modelFolder.appendingPathComponent("SenseVoiceSmall.mlmodelc.zip")
+            let extractedRootURL = modelFolder.appendingPathComponent("coreml-extract", isDirectory: true)
+            let destinationModelURL = modelFolder.appendingPathComponent("SenseVoiceSmall.mlmodelc", isDirectory: true)
+            let destinationSentencePieceURL = modelFolder.appendingPathComponent("spm")
+            let destinationCMVNURL = modelFolder.appendingPathComponent("cmvn_am.mvn")
+
+            progressHandler(0.05, "Downloading SenseVoice Core ML model...")
+            let (temporaryArchiveURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLZipDownloadURL)
+            if fileManager.fileExists(atPath: destinationArchiveURL.path) {
+                try fileManager.removeItem(at: destinationArchiveURL)
+            }
+            try fileManager.moveItem(at: temporaryArchiveURL, to: destinationArchiveURL)
+
+            if fileManager.fileExists(atPath: extractedRootURL.path) {
+                try fileManager.removeItem(at: extractedRootURL)
+            }
+            try fileManager.createDirectory(at: extractedRootURL, withIntermediateDirectories: true)
+
+            progressHandler(0.45, "Extracting SenseVoice Core ML model...")
+            try fileManager.unzipItem(at: destinationArchiveURL, to: extractedRootURL)
+
+            let extractedModelURL = try resolveExtractedCoreMLModel(in: extractedRootURL)
+            if fileManager.fileExists(atPath: destinationModelURL.path) {
+                try fileManager.removeItem(at: destinationModelURL)
+            }
+            try fileManager.moveItem(at: extractedModelURL, to: destinationModelURL)
+            try fileManager.removeItem(at: destinationArchiveURL)
+            try fileManager.removeItem(at: extractedRootURL)
+
+            progressHandler(0.75, "Downloading SenseVoice tokenizer...")
+            let (temporarySentencePieceURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLSentencePieceDownloadURL)
+            if fileManager.fileExists(atPath: destinationSentencePieceURL.path) {
+                try fileManager.removeItem(at: destinationSentencePieceURL)
+            }
+            try fileManager.moveItem(at: temporarySentencePieceURL, to: destinationSentencePieceURL)
+
+            progressHandler(0.9, "Downloading SenseVoice CMVN...")
+            let (temporaryCMVNURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLCMVNDownloadURL)
+            if fileManager.fileExists(atPath: destinationCMVNURL.path) {
+                try fileManager.removeItem(at: destinationCMVNURL)
+            }
+            try fileManager.moveItem(at: temporaryCMVNURL, to: destinationCMVNURL)
         }
 
         progressHandler(1.0, "SenseVoice ready.")
@@ -635,5 +677,23 @@ final class ModelManager: ObservableObject {
             try fileManager.createDirectory(at: modelsURL, withIntermediateDirectories: true)
         }
         return modelsURL.appendingPathComponent("sensevoice", isDirectory: true)
+    }
+
+    private func resolveExtractedCoreMLModel(in directory: URL) throws -> URL {
+        if let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) {
+            for case let url as URL in enumerator {
+                guard url.pathExtension == "mlmodelc" else { continue }
+                var isDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                    return url
+                }
+            }
+        }
+
+        throw NSError(
+            domain: "ModelManager",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "SenseVoice Core ML archive did not contain an extracted .mlmodelc bundle."]
+        )
     }
 }
