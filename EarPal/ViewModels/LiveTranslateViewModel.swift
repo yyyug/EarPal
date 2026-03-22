@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 final class LiveTranslateViewModel: ObservableObject {
     private static let speechSegmentationPauseThreshold: TimeInterval = 1.0
+    private static let translationEnabledKey = "live.translation.enabled"
 
     struct AppleTranslationRequest: Equatable {
         let id = UUID()
@@ -22,6 +23,7 @@ final class LiveTranslateViewModel: ObservableObject {
 
     @Published var sourceLanguage = TranslationLanguage.english
     @Published var targetLanguage = TranslationLanguage.traditionalChinese
+    @Published var isTranslationEnabled = true
     @Published var transcriptText = ""
     @Published var translatedText = ""
     @Published var isListening = false
@@ -38,6 +40,7 @@ final class LiveTranslateViewModel: ObservableObject {
     let languageOptions = TranslationLanguage.commonOptions
 
     private let modelManager: ModelManager
+    private let defaults = UserDefaults.standard
     private let speechRecognizer: AppleSpeechRecognizer
     private let audioRecorder: AudioCaptureRecorder
     private let localASRService: LocalASRService
@@ -67,6 +70,7 @@ final class LiveTranslateViewModel: ObservableObject {
         self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
         self.localASRService = localASRService
         self.speechPlaybackService = speechPlaybackService ?? AppleSpeechPlaybackService()
+        self.isTranslationEnabled = defaults.object(forKey: Self.translationEnabledKey) as? Bool ?? true
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
@@ -95,15 +99,31 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     func refreshAvailableVoices() {
-        availableVoices = speechPlaybackService.availableVoices(for: targetLanguage.id)
+        let spokenLanguageID = spokenLanguage.id
+        availableVoices = speechPlaybackService.availableVoices(for: spokenLanguageID)
 
         if availableVoices.contains(where: { $0.identifier == selectedVoiceIdentifier }) {
             return
         }
 
-        selectedVoiceIdentifier = speechPlaybackService.defaultVoiceIdentifier(for: targetLanguage.id)
+        selectedVoiceIdentifier = speechPlaybackService.defaultVoiceIdentifier(for: spokenLanguageID)
             ?? availableVoices.first?.identifier
             ?? ""
+    }
+
+    func setTranslationEnabled(_ isEnabled: Bool) {
+        guard isTranslationEnabled != isEnabled else { return }
+        isTranslationEnabled = isEnabled
+        defaults.set(isEnabled, forKey: Self.translationEnabledKey)
+        refreshAvailableVoices()
+
+        if !isEnabled {
+            cancelTranslationWork(clearAppleRequest: true)
+            translatedText = ""
+            translationStatus = .idle
+        } else {
+            refreshTranslationIfNeeded()
+        }
     }
 
     func clearSession() {
@@ -145,6 +165,13 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     func refreshTranslationIfNeeded() {
+        guard isTranslationEnabled else {
+            cancelTranslationWork(clearAppleRequest: true)
+            translatedText = ""
+            translationStatus = .idle
+            return
+        }
+
         let normalizedTranscript = normalizeTranscript(transcriptText)
         pendingTranscriptText = normalizedTranscript
         lastTranscriptChangeAt = .now
@@ -160,6 +187,7 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     var translationStatusMessage: String {
+        guard isTranslationEnabled else { return "" }
         switch translationStatus {
         case .idle:
             return ""
@@ -173,6 +201,8 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func startListening() async {
+        clearSession()
+
         if modelManager.selectedASREngine != .apple {
             guard modelManager.canUse(modelManager.selectedASREngine) else {
                 statusMessage = "\(modelManager.selectedASREngine.displayName) is not installed on this device."
@@ -292,7 +322,7 @@ final class LiveTranslateViewModel: ObservableObject {
             scheduleTranslationEvaluation(stable: true)
         } else {
             translationDebounceTask?.cancel()
-            translationStatus = pendingTranscriptText.isEmpty ? .idle : .waitingForStableInput
+            translationStatus = isTranslationEnabled && !pendingTranscriptText.isEmpty ? .waitingForStableInput : .idle
         }
     }
 
@@ -302,6 +332,14 @@ final class LiveTranslateViewModel: ObservableObject {
         let sourceText = normalizeTranscript(pendingTranscriptText)
         guard !sourceText.isEmpty else {
             translationStatus = .idle
+            return
+        }
+
+        guard isTranslationEnabled else {
+            translationStatus = .idle
+            if stable {
+                speakTranscriptIfNeeded(sourceText)
+            }
             return
         }
 
@@ -401,6 +439,20 @@ final class LiveTranslateViewModel: ObservableObject {
         }
     }
 
+    private func speakTranscriptIfNeeded(_ transcript: String) {
+        guard autoSpeak else { return }
+
+        let normalized = normalizeTranscript(transcript)
+        guard !normalized.isEmpty else { return }
+
+        speechPlaybackService.speak(
+            text: normalized,
+            languageID: sourceLanguage.id,
+            speechRate: speechRate,
+            voiceIdentifier: selectedVoiceIdentifier
+        )
+    }
+
     private func cancelTranslationWork(clearAppleRequest: Bool) {
         translationDebounceTask?.cancel()
         translationDebounceTask = nil
@@ -461,6 +513,7 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func shouldTranslate(_ normalizedTranscript: String) -> Bool {
+        guard isTranslationEnabled else { return false }
         guard normalizedTranscript != lastTranslatedTranscriptText else {
             return sourceLanguage.id != lastTranslatedSourceLanguageID
                 || targetLanguage.id != lastTranslatedTargetLanguageID
@@ -468,5 +521,9 @@ final class LiveTranslateViewModel: ObservableObject {
         }
 
         return true
+    }
+
+    private var spokenLanguage: TranslationLanguage {
+        isTranslationEnabled ? targetLanguage : sourceLanguage
     }
 }

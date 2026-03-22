@@ -1,6 +1,7 @@
 import AudioCommon
 import Combine
 import Foundation
+import OSLog
 import ParakeetASR
 import Qwen3ASR
 import SpeechVAD
@@ -8,6 +9,7 @@ import ZIPFoundation
 
 @MainActor
 final class ModelManager: ObservableObject {
+    private static let logger = Logger(subsystem: "EarPal", category: "ModelManager")
     static let parakeetModelID = ParakeetASRModel.defaultModelId
     static let senseVoiceRepositoryURL = URL(string: "https://github.com/FunAudioLLM/SenseVoice")!
     static let senseVoiceModelDownloadURL = URL(string: "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/model.int8.onnx?download=true")!
@@ -36,6 +38,7 @@ final class ModelManager: ObservableObject {
     private let selectedSenseVoiceBackendKey = "selected.sensevoice.backend"
     private let selectedTranslationKey = "selected.translation.engine"
     private let fileManager = FileManager.default
+    private let senseVoiceService = SenseVoiceASRService()
 
     init() {
         let installedIDs = Set(defaults.stringArray(forKey: installedModelsKey) ?? [])
@@ -58,6 +61,7 @@ final class ModelManager: ObservableObject {
         selectedTranslationEngine = Self.resolveTranslationEngine(storedTranslation, with: initialModels)
         refreshSenseVoiceModelState()
         selectedASREngine = Self.resolveASREngine(selectedASREngine, with: models)
+        scheduleSenseVoiceValidationIfNeeded()
     }
 
     var asrModels: [InferenceModel] {
@@ -99,21 +103,26 @@ final class ModelManager: ObservableObject {
         selectedSenseVoiceBackend = backend
         defaults.set(backend.rawValue, forKey: selectedSenseVoiceBackendKey)
         refreshSenseVoiceModelState()
+        scheduleSenseVoiceValidationIfNeeded()
         select(asr: selectedASREngine)
     }
 
     var selectedSenseVoiceBackendStatus: String {
+        let senseVoiceModel = models.first(where: { $0.id == "sensevoice-asr" })
+        if senseVoiceModel?.statusNote == "Checking..." {
+            return "Checking the selected SenseVoice backend runtime..."
+        }
         switch selectedSenseVoiceBackend {
         case .sherpaOnnx:
-            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .sherpaOnnx)
+            return (senseVoiceModel?.isInstalled == true)
                 ? "Installed and ready with the current SherpaOnnx runtime."
                 : "Download the SenseVoice ONNX model to use this backend."
         case .ggmlMetal:
-            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .ggmlMetal)
+            return (senseVoiceModel?.isInstalled == true)
                 ? "Installed and ready with the ggml + Metal runtime."
                 : "Download the SenseVoice GGUF model to use this backend."
         case .coreML:
-            return Self.isSenseVoiceInstalled(fileManager: fileManager, backend: .coreML)
+            return (senseVoiceModel?.isInstalled == true)
                 ? "Installed and ready with the experimental Core ML runtime."
                 : "Download the SenseVoice Core ML model to use this backend."
         }
@@ -168,7 +177,8 @@ final class ModelManager: ObservableObject {
                             note = "Downloaded."
                         }
                         self.markInstalled(id: modelID, note: note)
-                        self.select(asr: .senseVoice)
+                        self.refreshSenseVoiceModelState()
+                        self.scheduleSenseVoiceValidationIfNeeded(selectOnSuccess: true)
                     }
                 case "qwen3-asr":
                     let model = try await Qwen3ASRModel.fromPretrained(modelId: Self.qwen3ASRModelID) { [weak self] progress, status in
@@ -243,9 +253,12 @@ final class ModelManager: ObservableObject {
             models[index].isInstalled = false
             models[index].isDownloading = false
             models[index].downloadProgress = 0
-            models[index].statusNote = "Removed from device."
+            models[index].statusNote = defaultStatusNote(for: deletedModel.id)
             persistInstalledModels()
             resetSelectionsIfNeeded(deletedModel: deletedModel)
+            if deletedModel.id == "sensevoice-asr" {
+                refreshSenseVoiceModelState()
+            }
         } catch {
             models[index].statusNote = "Delete failed: \(error.localizedDescription)"
         }
@@ -278,6 +291,49 @@ final class ModelManager: ObservableObject {
             models[index].statusNote = installed
                 ? "Ready."
                 : "Download"
+        }
+    }
+
+    private func scheduleSenseVoiceValidationIfNeeded(selectOnSuccess: Bool = false) {
+        guard Self.isSenseVoiceInstalled(fileManager: fileManager, backend: selectedSenseVoiceBackend) else { return }
+
+        let backend = selectedSenseVoiceBackend
+        let language = selectedSenseVoiceLanguage.resolvedCode(for: "en")
+        if let index = models.firstIndex(where: { $0.id == "sensevoice-asr" }) {
+            models[index].isInstalled = false
+            models[index].isDownloading = true
+            models[index].statusNote = "Checking..."
+        }
+
+        Task {
+            do {
+                try senseVoiceService.validateBackend(backend: backend, language: language)
+                await MainActor.run {
+                    Self.logger.debug("SenseVoice backend validated: \(backend.rawValue, privacy: .public)")
+                    guard let index = self.models.firstIndex(where: { $0.id == "sensevoice-asr" }),
+                          self.selectedSenseVoiceBackend == backend else { return }
+                    self.models[index].isInstalled = true
+                    self.models[index].isDownloading = false
+                    self.models[index].downloadProgress = 1
+                    self.models[index].statusNote = "Ready."
+                    if selectOnSuccess {
+                        self.select(asr: .senseVoice)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    Self.logger.error("SenseVoice backend validation failed for \(backend.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    guard let index = self.models.firstIndex(where: { $0.id == "sensevoice-asr" }),
+                          self.selectedSenseVoiceBackend == backend else { return }
+                    self.models[index].isInstalled = false
+                    self.models[index].isDownloading = false
+                    self.models[index].downloadProgress = 0
+                    self.models[index].statusNote = "Download"
+                    if self.selectedASREngine == .senseVoice {
+                        self.select(asr: .apple)
+                    }
+                }
+            }
         }
     }
 
@@ -507,6 +563,20 @@ final class ModelManager: ObservableObject {
         }
     }
 
+    private func defaultStatusNote(for modelID: String) -> String {
+        switch modelID {
+        case "sensevoice-asr":
+            switch selectedSenseVoiceBackend {
+            case .sherpaOnnx, .ggmlMetal, .coreML:
+                return "Download"
+            }
+        case "parakeet-asr", "qwen3-asr", "translate-gemma":
+            return "Download"
+        default:
+            return ""
+        }
+    }
+
     func translateGemmaModelFileURL() throws -> URL {
         try Self.translateGemmaModelFileURL(fileManager: fileManager)
     }
@@ -544,14 +614,14 @@ final class ModelManager: ObservableObject {
             let destinationTokensURL = modelFolder.appendingPathComponent("tokens.txt")
 
             progressHandler(0.05, "Downloading SenseVoice ONNX model...")
-            let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceModelDownloadURL)
+            let temporaryModelURL = try await validatedDownload(from: Self.senseVoiceModelDownloadURL)
             if fileManager.fileExists(atPath: destinationModelURL.path) {
                 try fileManager.removeItem(at: destinationModelURL)
             }
             try fileManager.moveItem(at: temporaryModelURL, to: destinationModelURL)
 
             progressHandler(0.92, "Downloading SenseVoice vocabulary...")
-            let (temporaryTokensURL, _) = try await URLSession.shared.download(from: Self.senseVoiceTokensDownloadURL)
+            let temporaryTokensURL = try await validatedDownload(from: Self.senseVoiceTokensDownloadURL)
             if fileManager.fileExists(atPath: destinationTokensURL.path) {
                 try fileManager.removeItem(at: destinationTokensURL)
             }
@@ -559,7 +629,7 @@ final class ModelManager: ObservableObject {
         case .ggmlMetal:
             let destinationModelURL = modelFolder.appendingPathComponent("sense-voice-small-q4_k.gguf")
             progressHandler(0.05, "Downloading SenseVoice GGUF model...")
-            let (temporaryModelURL, _) = try await URLSession.shared.download(from: Self.senseVoiceGGUFDownloadURL)
+            let temporaryModelURL = try await validatedDownload(from: Self.senseVoiceGGUFDownloadURL)
             if fileManager.fileExists(atPath: destinationModelURL.path) {
                 try fileManager.removeItem(at: destinationModelURL)
             }
@@ -572,7 +642,7 @@ final class ModelManager: ObservableObject {
             let destinationCMVNURL = modelFolder.appendingPathComponent("cmvn_am.mvn")
 
             progressHandler(0.05, "Downloading SenseVoice Core ML model...")
-            let (temporaryArchiveURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLZipDownloadURL)
+            let temporaryArchiveURL = try await validatedDownload(from: Self.senseVoiceCoreMLZipDownloadURL)
             if fileManager.fileExists(atPath: destinationArchiveURL.path) {
                 try fileManager.removeItem(at: destinationArchiveURL)
             }
@@ -595,21 +665,49 @@ final class ModelManager: ObservableObject {
             try fileManager.removeItem(at: extractedRootURL)
 
             progressHandler(0.75, "Downloading SenseVoice tokenizer...")
-            let (temporarySentencePieceURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLSentencePieceDownloadURL)
+            let temporarySentencePieceURL = try await validatedDownload(from: Self.senseVoiceCoreMLSentencePieceDownloadURL)
             if fileManager.fileExists(atPath: destinationSentencePieceURL.path) {
                 try fileManager.removeItem(at: destinationSentencePieceURL)
             }
             try fileManager.moveItem(at: temporarySentencePieceURL, to: destinationSentencePieceURL)
 
             progressHandler(0.9, "Downloading SenseVoice CMVN...")
-            let (temporaryCMVNURL, _) = try await URLSession.shared.download(from: Self.senseVoiceCoreMLCMVNDownloadURL)
+            let temporaryCMVNURL = try await validatedDownload(from: Self.senseVoiceCoreMLCMVNDownloadURL)
             if fileManager.fileExists(atPath: destinationCMVNURL.path) {
                 try fileManager.removeItem(at: destinationCMVNURL)
             }
             try fileManager.moveItem(at: temporaryCMVNURL, to: destinationCMVNURL)
+
+            do {
+                try senseVoiceService.validateCoreMLAssets(in: modelFolder)
+            } catch {
+                if fileManager.fileExists(atPath: destinationModelURL.path) {
+                    try? fileManager.removeItem(at: destinationModelURL)
+                }
+                if fileManager.fileExists(atPath: destinationSentencePieceURL.path) {
+                    try? fileManager.removeItem(at: destinationSentencePieceURL)
+                }
+                if fileManager.fileExists(atPath: destinationCMVNURL.path) {
+                    try? fileManager.removeItem(at: destinationCMVNURL)
+                }
+                throw error
+            }
         }
 
         progressHandler(1.0, "SenseVoice ready.")
+    }
+
+    private func validatedDownload(from url: URL) async throws -> URL {
+        let (temporaryURL, response) = try await URLSession.shared.download(from: url)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw NSError(
+                domain: "ModelManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Download failed for \(url.lastPathComponent)."]
+            )
+        }
+        return temporaryURL
     }
 
     private func deleteTranslateGemmaModel() throws {

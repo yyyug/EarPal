@@ -8,9 +8,10 @@ struct LiveTranslateView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    languageBar
                     transcriptCard
-                    translationCard
+                    if viewModel.isTranslationEnabled {
+                        translationCard
+                    }
                 }
                 .padding(20)
             }
@@ -35,6 +36,7 @@ struct LiveTranslateView: View {
                 bottomBar
             }
             .onChange(of: viewModel.sourceLanguage) { _, _ in
+                viewModel.refreshAvailableVoices()
                 viewModel.refreshTranslationIfNeeded()
             }
             .onChange(of: viewModel.targetLanguage) { _, _ in
@@ -44,33 +46,6 @@ struct LiveTranslateView: View {
             .onChange(of: modelManager.selectedTranslationEngine) { _, _ in
                 viewModel.refreshTranslationIfNeeded()
             }
-        }
-    }
-
-    private var languageBar: some View {
-        HStack(spacing: 12) {
-            LanguageMenu(
-                title: "From",
-                selection: $viewModel.sourceLanguage,
-                options: viewModel.languageOptions
-            )
-
-            Button {
-                viewModel.swapLanguages()
-            } label: {
-                Image(systemName: "arrow.left.arrow.right.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.primary)
-                    .frame(width: 52, height: 52)
-                    .background(Color.white.opacity(0.8), in: Circle())
-            }
-            .accessibilityLabel("Swap languages")
-
-            LanguageMenu(
-                title: "To",
-                selection: $viewModel.targetLanguage,
-                options: viewModel.languageOptions
-            )
         }
     }
 
@@ -252,6 +227,36 @@ private struct SettingsSheet: View {
                     }
                 }
 
+                Section("Translation") {
+                    Toggle(
+                        "Translation",
+                        isOn: Binding(
+                            get: { viewModel.isTranslationEnabled },
+                            set: { viewModel.setTranslationEnabled($0) }
+                        )
+                    )
+
+                    Picker("From", selection: $viewModel.sourceLanguage) {
+                        ForEach(viewModel.languageOptions) { language in
+                            Text(language.displayName)
+                                .tag(language)
+                        }
+                    }
+
+                    if viewModel.isTranslationEnabled {
+                        Picker("To", selection: $viewModel.targetLanguage) {
+                            ForEach(viewModel.languageOptions) { language in
+                                Text(language.displayName)
+                                    .tag(language)
+                            }
+                        }
+
+                        Button("Swap Languages") {
+                            viewModel.swapLanguages()
+                        }
+                    }
+                }
+
                 if modelManager.selectedASREngine == .senseVoice {
                     Section("SenseVoice") {
                         Picker(
@@ -295,8 +300,12 @@ private struct SettingsSheet: View {
                     }
                 }
 
-                ModelSettingsSections()
-                    .environmentObject(modelManager)
+                Section("Models") {
+                    NavigationLink("Download Models") {
+                        ModelManagementView()
+                            .environmentObject(modelManager)
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

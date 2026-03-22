@@ -23,15 +23,18 @@ NSString *SenseVoiceGGMLTranscriptFromContext(struct sense_voice_context *contex
 
     NSMutableString *result = [NSMutableString string];
     const auto &ids = context->state->ids;
+    int previousTokenID = -1;
 
-    for (size_t index = 4; index < ids.size(); ++index) {
+    for (size_t index = 0; index < ids.size(); ++index) {
         const int tokenID = ids[index];
         if (tokenID == 0) {
+            previousTokenID = tokenID;
             continue;
         }
-        if (index > 0 && ids[index - 1] == tokenID) {
+        if (tokenID == previousTokenID) {
             continue;
         }
+        previousTokenID = tokenID;
 
         const auto token = context->vocab.id_to_token.find(tokenID);
         if (token == context->vocab.id_to_token.end()) {
@@ -39,12 +42,15 @@ NSString *SenseVoiceGGMLTranscriptFromContext(struct sense_voice_context *contex
         }
 
         NSString *piece = [NSString stringWithUTF8String:token->second.c_str()];
-        if (piece != nil) {
+        if (piece != nil &&
+            ![piece hasPrefix:@"<|"] &&
+            !([piece hasPrefix:@"<"] && [piece hasSuffix:@">"])) {
             [result appendString:piece];
         }
     }
 
-    return [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *normalized = [result stringByReplacingOccurrencesOfString:@"▁" withString:@" "];
+    return [normalized stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
 void SenseVoiceGGMLFreeContext(struct sense_voice_context *context) {
@@ -106,20 +112,28 @@ void SenseVoiceGGMLFreeContext(struct sense_voice_context *context) {
         return nil;
     }
 
-    struct sense_voice_context_params contextParams = sense_voice_context_default_params();
-    contextParams.use_gpu = true;
-    contextParams.use_itn = useITN;
-    contextParams.flash_attn = false;
-    contextParams.gpu_device = 0;
-    contextParams.cb_eval = nullptr;
-    contextParams.cb_eval_user_data = nullptr;
+    auto makeContextParams = ^(bool useGPU) {
+        struct sense_voice_context_params params = sense_voice_context_default_params();
+        params.use_gpu = useGPU;
+        params.use_itn = useITN;
+        params.flash_attn = false;
+        params.gpu_device = 0;
+        params.cb_eval = nullptr;
+        params.cb_eval_user_data = nullptr;
+        return params;
+    };
 
+    struct sense_voice_context_params contextParams = makeContextParams(true);
     _context = sense_voice_small_init_from_file_with_params(modelPath.fileSystemRepresentation, contextParams);
+    if (_context == nullptr) {
+        contextParams = makeContextParams(false);
+        _context = sense_voice_small_init_from_file_with_params(modelPath.fileSystemRepresentation, contextParams);
+    }
     if (_context == nullptr) {
         if (error != nullptr) {
             *error = SenseVoiceGGMLMakeError(
                 SenseVoiceGGMLBridgeErrorCodeInitializationFailed,
-                @"SenseVoice ggml failed to initialize."
+                @"SenseVoice ggml failed to initialize with Metal or CPU."
             );
         }
         return nil;

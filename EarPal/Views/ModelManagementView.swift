@@ -10,7 +10,7 @@ struct ModelManagementView: View {
                 ModelSettingsSections()
                     .environmentObject(modelManager)
             }
-            .navigationTitle("Models & Engines")
+            .navigationTitle("Download Models")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
@@ -103,6 +103,7 @@ private struct ModelRow: View {
     let isSelected: Bool
     let onDownload: () -> Void
     let onDelete: () -> Void
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -118,11 +119,10 @@ private struct ModelRow: View {
 
                 Spacer()
 
-                if model.isInstalled && !model.isBuiltIn {
-                    Button("Delete", role: .destructive, action: onDelete)
-                } else if !model.isBuiltIn {
-                    Button(model.isDownloading ? "Downloading" : "Download", action: onDownload)
-                        .disabled(model.isDownloading)
+                if !model.isBuiltIn {
+                    Text(actionLabel)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(actionColor)
                 }
             }
 
@@ -135,10 +135,43 @@ private struct ModelRow: View {
             }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !model.isBuiltIn, !model.isDownloading else { return }
+            if model.isInstalled {
+                showingDeleteConfirmation = true
+            } else {
+                onDownload()
+            }
+        }
+        .confirmationDialog(
+            "Delete \(model.displayName)?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove the downloaded model from the device.")
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
         .accessibilityHint(accessibilityHint)
+    }
+
+    private var actionLabel: String {
+        if model.isDownloading {
+            return "Downloading"
+        }
+        return model.isInstalled ? "Downloaded" : "Download"
+    }
+
+    private var actionColor: Color {
+        if model.isDownloading {
+            return .secondary
+        }
+        return model.isInstalled ? .secondary : .accentColor
     }
 
     private var accessibilityLabel: String {
@@ -166,7 +199,7 @@ private struct ModelRow: View {
             return ""
         }
         if model.isInstalled {
-            return "Double tap to delete this model."
+            return "Double tap to confirm deleting this model."
         }
         if model.isDownloading {
             return "Model download in progress."

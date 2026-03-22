@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import Accelerate
+import OSLog
 @preconcurrency import CoreML
 
 protocol SenseVoiceRuntime: Sendable {
@@ -16,6 +17,7 @@ enum SenseVoiceASRServiceError: LocalizedError {
     case ggmlModelMissing
     case coreMLModelMissing
     case coreMLAssetsMissing
+    case coreMLContractInvalid
     case coreMLOutputInvalid
 
     var errorDescription: String? {
@@ -34,6 +36,8 @@ enum SenseVoiceASRServiceError: LocalizedError {
             return "The SenseVoice Core ML model is missing. Install an extracted SenseVoiceSmall.mlmodelc bundle in Models & Engines, then try again."
         case .coreMLAssetsMissing:
             return "The SenseVoice Core ML support assets are missing. Install the SentencePiece and CMVN files for the Core ML backend, then try again."
+        case .coreMLContractInvalid:
+            return "The downloaded SenseVoice Core ML model does not match the expected runtime contract."
         case .coreMLOutputInvalid:
             return "SenseVoice Core ML returned an unexpected output shape."
         }
@@ -41,13 +45,41 @@ enum SenseVoiceASRServiceError: LocalizedError {
 }
 
 struct SenseVoiceASRService {
+    private static let logger = Logger(subsystem: "EarPal", category: "SenseVoice")
     private let fileManager: FileManager
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 
+    func validateCoreMLAssets(in modelDirectory: URL) throws {
+        guard let modelURL = resolveCoreMLModelDirectory(in: modelDirectory) else {
+            throw SenseVoiceASRServiceError.coreMLModelMissing
+        }
+
+        guard let sentencePieceURL = resolveSentencePieceURL(in: modelDirectory),
+              let cmvnURL = resolveCMVNURL(in: modelDirectory) else {
+            throw SenseVoiceASRServiceError.coreMLAssetsMissing
+        }
+
+        _ = try CoreMLSenseVoiceRuntime(
+            modelURL: modelURL,
+            sentencePieceURL: sentencePieceURL,
+            cmvnURL: cmvnURL,
+            language: "auto"
+        )
+    }
+
+    func validateBackend(backend: SenseVoiceBackend, language: String = "auto") throws {
+        let runtime = try makeRuntimeSync(language: language, backend: backend)
+        runtime.unload()
+    }
+
     func makeRuntime(language: String, backend: SenseVoiceBackend) async throws -> any SenseVoiceRuntime {
+        return try makeRuntimeSync(language: language, backend: backend)
+    }
+
+    private func makeRuntimeSync(language: String, backend: SenseVoiceBackend) throws -> any SenseVoiceRuntime {
         switch backend {
         case .sherpaOnnx:
             let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
@@ -60,6 +92,7 @@ struct SenseVoiceASRService {
                 throw SenseVoiceASRServiceError.modelFilesMissing
             }
 
+            Self.logger.debug("Initializing SenseVoice ONNX runtime with language: \(language, privacy: .public)")
             return try SherpaOnnxSenseVoiceRuntime(modelURL: modelURL, tokensURL: tokensURL, language: language)
         case .ggmlMetal:
             let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
@@ -68,6 +101,7 @@ struct SenseVoiceASRService {
                 throw SenseVoiceASRServiceError.ggmlModelMissing
             }
 
+            Self.logger.debug("Initializing SenseVoice ggml runtime with model: \(modelURL.lastPathComponent, privacy: .public), language: \(language, privacy: .public)")
             return try GGMLSenseVoiceRuntime(modelURL: modelURL, language: language)
         case .coreML:
             let modelDirectory = try ModelManager.senseVoiceModelDirectoryURL(fileManager: fileManager)
@@ -80,6 +114,7 @@ struct SenseVoiceASRService {
                 throw SenseVoiceASRServiceError.coreMLAssetsMissing
             }
 
+            Self.logger.debug("Initializing SenseVoice Core ML runtime with model: \(modelURL.lastPathComponent, privacy: .public), language: \(language, privacy: .public)")
             return try CoreMLSenseVoiceRuntime(
                 modelURL: modelURL,
                 sentencePieceURL: sentencePieceURL,
@@ -239,9 +274,19 @@ private final class GGMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRuntim
 }
 
 private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRuntime {
+    private struct Contract {
+        let speechInput: String
+        let speechLengthsInput: String
+        let languageInput: String
+        let textnormInput: String
+        let logitsOutput: String
+        let lengthsOutput: String?
+    }
+
     private let model: MLModel
     private let decoder: SentencePieceDecoder
     private let featureExtractor: SenseVoiceCoreMLFeatureExtractor
+    private let contract: Contract
     private let languageID: Int32
     private let textnormID: Int32
 
@@ -252,8 +297,9 @@ private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRunt
         self.decoder = try SentencePieceDecoder(modelPath: sentencePieceURL.path)
         let cmvn = try SenseVoiceCMVN.load(from: cmvnURL)
         self.featureExtractor = SenseVoiceCoreMLFeatureExtractor(cmvn: cmvn)
+        self.contract = try Self.resolveContract(for: model)
         self.languageID = Self.languageID(for: language)
-        self.textnormID = 14
+        self.textnormID = Self.defaultTextnormID
     }
 
     func transcribe(audio: [Float]) throws -> String {
@@ -266,19 +312,21 @@ private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRunt
         let textnorm = try makeVectorArray([textnormID], dataType: .int32)
 
         let inputs = try MLDictionaryFeatureProvider(dictionary: [
-            "speech": MLFeatureValue(multiArray: features),
-            "speech_lengths": MLFeatureValue(multiArray: lengths),
-            "language": MLFeatureValue(multiArray: language),
-            "textnorm": MLFeatureValue(multiArray: textnorm)
+            contract.speechInput: MLFeatureValue(multiArray: features),
+            contract.speechLengthsInput: MLFeatureValue(multiArray: lengths),
+            contract.languageInput: MLFeatureValue(multiArray: language),
+            contract.textnormInput: MLFeatureValue(multiArray: textnorm)
         ])
 
         let outputs = try model.prediction(from: inputs)
-        guard let logits = outputs.featureValue(for: "ctc_logits")?.multiArrayValue,
-              let encoderOutLens = outputs.featureValue(for: "encoder_out_lens")?.multiArrayValue else {
+        guard let logits = outputs.featureValue(for: contract.logitsOutput)?.multiArrayValue else {
             throw SenseVoiceASRServiceError.coreMLOutputInvalid
         }
 
-        let frameCount = max(0, min(extracted.frameCount, readFirstInt(from: encoderOutLens)))
+        let outputLength = contract.lengthsOutput
+            .flatMap { outputs.featureValue(for: $0)?.multiArrayValue }
+            .map { readFirstInt(from: $0) }
+        let frameCount = max(0, min(extracted.frameCount, outputLength ?? extracted.frameCount))
         let tokenIDs = try greedyDecode(logits: logits, frameCount: frameCount)
         return decoder.decode(tokenIDs)
     }
@@ -371,9 +419,6 @@ private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRunt
             previousToken = token
         }
 
-        if decoded.count > 4 {
-            return Array(decoded.dropFirst(4))
-        }
         return decoded
     }
 
@@ -405,6 +450,90 @@ private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRunt
         default:
             return 0
         }
+    }
+
+    private static let defaultTextnormID: Int32 = 14
+
+    private static func resolveContract(for model: MLModel) throws -> Contract {
+        let inputs = model.modelDescription.inputDescriptionsByName
+        let outputs = model.modelDescription.outputDescriptionsByName
+
+        guard let speechInput = resolveName(
+            preferred: ["speech"],
+            fallback: inputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("speech")
+            }
+        ),
+        let lengthsInput = resolveName(
+            preferred: ["speech_lengths", "speech_length", "lengths"],
+            fallback: inputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("length")
+            }
+        ),
+        let languageInput = resolveName(
+            preferred: ["language", "lang"],
+            fallback: inputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("lang")
+            }
+        ),
+        let textnormInput = resolveName(
+            preferred: ["textnorm", "text_norm", "itn"],
+            fallback: inputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("norm") || name.localizedCaseInsensitiveContains("itn")
+            }
+        ),
+        let logitsOutput = resolveName(
+            preferred: ["ctc_logits", "logits"],
+            fallback: outputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("logit")
+            }
+        ) else {
+            throw SenseVoiceASRServiceError.coreMLContractInvalid
+        }
+
+        let lengthsOutput = resolveName(
+            preferred: ["encoder_out_lens", "encoder_out_len", "output_lengths", "lengths"],
+            fallback: outputs,
+            where: { type, name in
+                guard case .multiArray = type else { return false }
+                return name.localizedCaseInsensitiveContains("len")
+            }
+        )
+
+        return Contract(
+            speechInput: speechInput,
+            speechLengthsInput: lengthsInput,
+            languageInput: languageInput,
+            textnormInput: textnormInput,
+            logitsOutput: logitsOutput,
+            lengthsOutput: lengthsOutput
+        )
+    }
+
+    private static func resolveName(
+        preferred: [String],
+        fallback: [String: MLFeatureDescription],
+        where predicate: (MLFeatureType, String) -> Bool
+    ) -> String? {
+        for candidate in preferred where fallback[candidate] != nil {
+            return candidate
+        }
+
+        for (name, description) in fallback where predicate(description.type, name) {
+            return name
+        }
+
+        return nil
     }
 }
 
