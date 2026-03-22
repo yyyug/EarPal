@@ -33,7 +33,7 @@ jobs:
             ${{ env.CLONED_SOURCE_PACKAGES_PATH }}
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
-          key: ${{ runner.os }}-xcode-packages-${{ hashFiles('EarPal.xcodeproj/project.pbxproj', 'Podfile', 'Podfile.lock', 'EarPal.xcworkspace/xcshareddata/swiftpm/Package.resolved', '.github/workflows/build-unsigned-ipa.yml') }}
+          key: ${{ runner.os }}-xcode-packages-${{ hashFiles('EarPal.xcodeproj/project.pbxproj', 'Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
           restore-keys: |
             ${{ runner.os }}-xcode-packages-
 
@@ -47,7 +47,18 @@ jobs:
         run: |
           gem list cocoapods -i || sudo gem install cocoapods
 
+      - name: Restore CocoaPods cache
+        id: cache-cocoapods
+        uses: actions/cache@v4
+        with:
+          path: |
+            Pods
+            EarPal.xcworkspace
+            Podfile.lock
+          key: ${{ runner.os }}-cocoapods-xcode${{ steps.toolchain.outputs.xcode_version }}-${{ hashFiles('Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
+
       - name: Install Pods
+        if: steps.cache-cocoapods.outputs.cache-hit != 'true'
         run: pod install
 
       - name: Restore SherpaOnnx runtime cache

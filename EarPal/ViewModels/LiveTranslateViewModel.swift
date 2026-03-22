@@ -57,6 +57,8 @@ final class LiveTranslateViewModel: ObservableObject {
     private var lastTranslatedEngineID = ""
     private var lastTranscriptChangeAt = Date.distantPast
     private var lastCompletedDisplayTranscript = ""
+    private var lastSpokenTranscriptText = ""
+    private var lastSpokenLanguageID = ""
 
     init(
         modelManager: ModelManager,
@@ -145,6 +147,8 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedTargetLanguageID = ""
         lastTranslatedEngineID = ""
         lastCompletedDisplayTranscript = ""
+        lastSpokenTranscriptText = ""
+        lastSpokenLanguageID = ""
     }
 
     func receiveAppleTranslation(_ translatedText: String, for request: AppleTranslationRequest) {
@@ -336,9 +340,15 @@ final class LiveTranslateViewModel: ObservableObject {
         }
 
         guard isTranslationEnabled else {
-            translationStatus = .idle
             if stable {
+                translationStatus = .idle
                 speakTranscriptIfNeeded(sourceText)
+            } else {
+                translationStatus = .waitingForStableInput
+                translationDebounceTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(Self.speechSegmentationPauseThreshold))
+                    await self?.confirmStableAndSpeak(candidateText: sourceText)
+                }
             }
             return
         }
@@ -360,6 +370,13 @@ final class LiveTranslateViewModel: ObservableObject {
         guard candidateText == normalizeTranscript(pendingTranscriptText) else { return }
         guard Date.now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold else { return }
         beginTranslation(for: candidateText)
+    }
+
+    private func confirmStableAndSpeak(candidateText: String) {
+        guard candidateText == normalizeTranscript(pendingTranscriptText) else { return }
+        guard Date.now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold else { return }
+        translationStatus = .idle
+        speakTranscriptIfNeeded(candidateText)
     }
 
     private func beginTranslation(for sourceText: String) {
@@ -444,6 +461,10 @@ final class LiveTranslateViewModel: ObservableObject {
 
         let normalized = normalizeTranscript(transcript)
         guard !normalized.isEmpty else { return }
+        guard normalized != lastSpokenTranscriptText || sourceLanguage.id != lastSpokenLanguageID else { return }
+
+        lastSpokenTranscriptText = normalized
+        lastSpokenLanguageID = sourceLanguage.id
 
         speechPlaybackService.speak(
             text: normalized,
