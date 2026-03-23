@@ -26,13 +26,6 @@ struct ModelManagementView: View {
 struct ModelSettingsSections: View {
     @EnvironmentObject private var modelManager: ModelManager
 
-    private var asrSelection: Binding<ASREngine> {
-        Binding(
-            get: { modelManager.selectedASREngine },
-            set: { modelManager.select(asr: $0) }
-        )
-    }
-
     private var translationSelection: Binding<TranslationEngine> {
         Binding(
             get: { modelManager.selectedTranslationEngine },
@@ -41,21 +34,13 @@ struct ModelSettingsSections: View {
     }
 
     var body: some View {
-        speechRecognitionSection
+        asrModelsSection
         translationSection
     }
 
     @ViewBuilder
-    private var speechRecognitionSection: some View {
+    private var asrModelsSection: some View {
         Section("Speech Recognition") {
-            Picker("ASR Engine", selection: asrSelection) {
-                ForEach(ASREngine.allCases) { engine in
-                    Text(asrLabel(for: engine))
-                        .tag(engine)
-                }
-            }
-            .pickerStyle(.navigationLink)
-
             ForEach(modelManager.asrModels) { model in
                 ModelRow(
                     model: model,
@@ -88,11 +73,6 @@ struct ModelSettingsSections: View {
             }
         }
     }
-
-    private func asrLabel(for engine: ASREngine) -> String {
-        modelManager.canUse(engine) ? engine.displayName : "\(engine.displayName) (Install model)"
-    }
-
     private func translationLabel(for engine: TranslationEngine) -> String {
         modelManager.canUse(engine) ? engine.displayName : "\(engine.displayName) (Install model)"
     }

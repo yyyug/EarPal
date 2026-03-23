@@ -95,15 +95,23 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     private func candidateVoices(for languageID: String) -> [AVSpeechSynthesisVoice] {
         let voices = AVSpeechSynthesisVoice.speechVoices()
         let normalized = languageID.lowercased()
-        let preferredLanguages = preferredVoiceLanguages(for: normalized)
+        let languageCandidates = preferredVoiceLanguages(for: normalized)
+        let userPreferredLanguages = Locale.preferredLanguages.map { $0.lowercased() }
 
         let filtered = voices.filter { voice in
-            preferredLanguages.contains(voice.language.lowercased())
+            let voiceLanguage = voice.language.lowercased()
+            return languageCandidates.contains(voiceLanguage)
+                || voiceMatchesLanguageFamily(voiceLanguage, languageCandidates: languageCandidates)
         }
         if !filtered.isEmpty {
             return filtered.sorted { lhs, rhs in
-                voiceMatchRank(for: lhs.language.lowercased(), preferredLanguages: preferredLanguages)
-                    < voiceMatchRank(for: rhs.language.lowercased(), preferredLanguages: preferredLanguages)
+                compareVoices(
+                    lhs,
+                    rhs,
+                    targetLanguageID: normalized,
+                    languageCandidates: languageCandidates,
+                    userPreferredLanguages: userPreferredLanguages
+                )
             }
         }
 
@@ -190,16 +198,107 @@ final class AppleSpeechPlaybackService: NSObject, AVSpeechSynthesizerDelegate {
     private func preferredVoiceLanguages(for normalizedLanguageID: String) -> [String] {
         switch normalizedLanguageID {
         case "zh-hant":
-            return ["zh-hant", "zh-hk", "yue-hk", "zh-tw"]
+            return ["yue-hk", "zh-hk", "zh-tw", "zh-hant"]
         case "zh-hans":
-            return ["zh-hans", "zh-cn", "zh-sg"]
+            return ["zh-cn", "zh-sg", "zh-hans"]
         default:
             return [normalizedLanguageID]
         }
     }
 
-    private func voiceMatchRank(for languageID: String, preferredLanguages: [String]) -> Int {
-        preferredLanguages.firstIndex(of: languageID) ?? Int.max
+    private func voiceMatchesLanguageFamily(_ voiceLanguageID: String, languageCandidates: [String]) -> Bool {
+        let voicePrefix = voiceLanguageID.split(separator: "-").first.map(String.init) ?? voiceLanguageID
+        return languageCandidates.contains { candidate in
+            let candidatePrefix = candidate.split(separator: "-").first.map(String.init) ?? candidate
+            return voicePrefix == candidatePrefix
+        }
+    }
+
+    private func compareVoices(
+        _ lhs: AVSpeechSynthesisVoice,
+        _ rhs: AVSpeechSynthesisVoice,
+        targetLanguageID: String,
+        languageCandidates: [String],
+        userPreferredLanguages: [String]
+    ) -> Bool {
+        let lhsKey = voiceSortKey(
+            for: lhs,
+            targetLanguageID: targetLanguageID,
+            languageCandidates: languageCandidates,
+            userPreferredLanguages: userPreferredLanguages
+        )
+        let rhsKey = voiceSortKey(
+            for: rhs,
+            targetLanguageID: targetLanguageID,
+            languageCandidates: languageCandidates,
+            userPreferredLanguages: userPreferredLanguages
+        )
+        return lhsKey.lexicographicallyPrecedes(rhsKey)
+    }
+
+    private func voiceSortKey(
+        for voice: AVSpeechSynthesisVoice,
+        targetLanguageID: String,
+        languageCandidates: [String],
+        userPreferredLanguages: [String]
+    ) -> [Int] {
+        let languageID = voice.language.lowercased()
+        return [
+            exactLanguageRank(for: languageID, targetLanguageID: targetLanguageID),
+            preferredLanguageRank(for: languageID, preferredLanguages: userPreferredLanguages),
+            candidateLanguageRank(for: languageID, languageCandidates: languageCandidates),
+            qualityRank(for: voice),
+            languageID.hashValue
+        ]
+    }
+
+    private func exactLanguageRank(for languageID: String, targetLanguageID: String) -> Int {
+        languageID == targetLanguageID ? 0 : 1
+    }
+
+    private func preferredLanguageRank(for languageID: String, preferredLanguages: [String]) -> Int {
+        if let exactMatch = preferredLanguages.firstIndex(of: languageID) {
+            return exactMatch
+        }
+
+        let languagePrefix = languageID.split(separator: "-").first.map(String.init) ?? languageID
+        if let familyMatch = preferredLanguages.firstIndex(where: { preferred in
+            let preferredPrefix = preferred.split(separator: "-").first.map(String.init) ?? preferred
+            return preferredPrefix == languagePrefix
+        }) {
+            return preferredLanguages.count + familyMatch
+        }
+
+        return Int.max / 4
+    }
+
+    private func candidateLanguageRank(for languageID: String, languageCandidates: [String]) -> Int {
+        if let exactMatch = languageCandidates.firstIndex(of: languageID) {
+            return exactMatch
+        }
+
+        let languagePrefix = languageID.split(separator: "-").first.map(String.init) ?? languageID
+        if let familyMatch = languageCandidates.firstIndex(where: { candidate in
+            let candidatePrefix = candidate.split(separator: "-").first.map(String.init) ?? candidate
+            return candidatePrefix == languagePrefix
+        }) {
+            return languageCandidates.count + familyMatch
+        }
+
+        return Int.max / 2
+    }
+
+    private func qualityRank(for voice: AVSpeechSynthesisVoice) -> Int {
+        switch voice.quality {
+        case .premium:
+            return 0
+        case .enhanced:
+            return 1
+        case .default:
+            return 2
+        @unknown default:
+            return 3
+        }
     }
 
     private func localeDisplaySuffix(for languageID: String) -> String {
