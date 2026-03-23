@@ -57,8 +57,17 @@ jobs:
             Podfile.lock
           key: ${{ runner.os }}-cocoapods-xcode${{ steps.toolchain.outputs.xcode_version }}-${{ hashFiles('Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
 
+      - name: Check CocoaPods state
+        id: pod-state
+        run: |
+          if [ ! -f Podfile.lock ] || [ ! -f Pods/Manifest.lock ] || [ ! -d EarPal.xcworkspace ] || ! cmp -s Podfile.lock Pods/Manifest.lock; then
+            echo "needs_install=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_install=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install Pods
-        if: steps.cache-cocoapods.outputs.cache-hit != 'true'
+        if: steps.cache-cocoapods.outputs.cache-hit != 'true' || steps.pod-state.outputs.needs_install == 'true'
         run: pod install
 
       - name: Restore SherpaOnnx runtime cache
