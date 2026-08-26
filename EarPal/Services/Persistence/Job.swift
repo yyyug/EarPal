@@ -65,10 +65,14 @@ struct Job: Codable, FetchableRecord, PersistableRecord, Identifiable {
         text.isEmpty ? "(No transcript)" : String(text.prefix(100))
     }
 
-    var displayDate: String {
+    private static let displayDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
-        return formatter.string(from: createdAt)
+        return formatter
+    }()
+
+    var displayDate: String {
+        Self.displayDateFormatter.string(from: createdAt)
     }
 }

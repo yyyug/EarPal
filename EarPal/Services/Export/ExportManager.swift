@@ -72,7 +72,7 @@ enum ExportManager {
             "translatedLanguage": job.translatedLanguage ?? "",
             "sourceLanguage": job.sourceLanguage ?? "",
             "targetLanguage": job.targetLanguage ?? "",
-            "createdAt": ISO8601DateFormatter().string(from: job.createdAt),
+            "createdAt": dateFormatter.string(from: job.createdAt),
             "segments": segments.map { seg in
                 [
                     "id": seg.id,
@@ -107,7 +107,9 @@ enum ExportManager {
     // MARK: - Directory
 
     static func exportDirectory() throws -> URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            throw CocoaError(.fileNoSuchFile)
+        }
         let exportDir = docs.appendingPathComponent("Exports", isDirectory: true)
         if !FileManager.default.fileExists(atPath: exportDir.path) {
             try FileManager.default.createDirectory(at: exportDir, withIntermediateDirectories: true)

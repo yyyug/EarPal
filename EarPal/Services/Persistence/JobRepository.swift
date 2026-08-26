@@ -1,7 +1,6 @@
 import Foundation
 import GRDB
 
-@MainActor
 final class JobRepository: ObservableObject {
     static let shared = JobRepository()
 
@@ -15,14 +14,19 @@ final class JobRepository: ObservableObject {
 
     private func setup() {
         do {
-            let appSupport = FileManager.default.urls(
+            guard let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
-            ).first!
+            ).first else {
+                print("JobRepository: Cannot locate Application Support directory")
+                return
+            }
             let dbURL = appSupport.appendingPathComponent("earpal.db")
             dbPool = try DatabasePool(path: dbURL.path)
             try createTables()
-            isReady = true
+            Task { @MainActor in
+                self.isReady = true
+            }
         } catch {
             print("JobRepository setup failed: \(error)")
         }
@@ -67,15 +71,13 @@ final class JobRepository: ObservableObject {
 
     // MARK: - Jobs
 
-    func createJob(name: String? = nil) -> Job {
+    func createJob(name: String? = nil) throws -> Job {
         let job = Job(name: name)
-        guard let dbPool else { return job }
-        do {
-            try dbPool.write { db in
-                try job.insert(db)
-            }
-        } catch {
-            print("Failed to create job: \(error)")
+        guard let dbPool else {
+            throw JobRepositoryError.databaseNotReady
+        }
+        try dbPool.write { db in
+            try job.insert(db)
         }
         return job
     }
@@ -104,76 +106,51 @@ final class JobRepository: ObservableObject {
         }
     }
 
-    func updateJob(_ job: Job) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                var updated = job
-                updated.updatedAt = Date()
-                try updated.update(db)
-            }
-        } catch {
-            print("Failed to update job: \(error)")
+    func updateJob(_ job: Job) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        var updated = job
+        updated.updatedAt = Date()
+        try dbPool.write { db in
+            try updated.update(db)
         }
     }
 
-    func updateJobTranscript(id: String, text: String) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE jobs SET text = ?, updated_at = ? WHERE id = ?",
-                    arguments: [text, Date(), id]
-                )
-            }
-        } catch {
-            print("Failed to update job transcript: \(error)")
+    func updateJobTranscript(id: String, text: String) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            try db.execute(
+                sql: "UPDATE jobs SET text = ?, updated_at = ? WHERE id = ?",
+                arguments: [text, Date(), id]
+            )
         }
     }
 
-    func updateJobTranslation(id: String, translatedText: String, language: String) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE jobs SET translated_text = ?, translated_language = ?, updated_at = ? WHERE id = ?",
-                    arguments: [translatedText, language, Date(), id]
-                )
-            }
-        } catch {
-            print("Failed to update job translation: \(error)")
+    func updateJobTranslation(id: String, translatedText: String, language: String) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            try db.execute(
+                sql: "UPDATE jobs SET translated_text = ?, translated_language = ?, updated_at = ? WHERE id = ?",
+                arguments: [translatedText, language, Date(), id]
+            )
         }
     }
 
-    func updateJobStatus(id: String, status: JobStatus, error: String? = nil) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
-                    arguments: [status.rawValue, error, Date(), id]
-                )
-                if status == .completed || status == .failed {
-                    try db.execute(
-                        sql: "UPDATE jobs SET completed_at = ? WHERE id = ?",
-                        arguments: [Date(), id]
-                    )
-                }
-            }
-        } catch {
-            print("Failed to update job status: \(error)")
+    func updateJobStatus(id: String, status: JobStatus, error: String? = nil) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            let completedAt: Date? = (status == .completed || status == .failed) ? Date() : nil
+            try db.execute(
+                sql: "UPDATE jobs SET status = ?, error = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+                arguments: [status.rawValue, error, completedAt, Date(), id]
+            )
         }
     }
 
-    func deleteJob(id: String) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(sql: "DELETE FROM segments WHERE job_id = ?", arguments: [id])
-                try db.execute(sql: "DELETE FROM jobs WHERE id = ?", arguments: [id])
-            }
-        } catch {
-            print("Failed to delete job: \(error)")
+    func deleteJob(id: String) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            try db.execute(sql: "DELETE FROM segments WHERE job_id = ?", arguments: [id])
+            try db.execute(sql: "DELETE FROM jobs WHERE id = ?", arguments: [id])
         }
     }
 
@@ -195,32 +172,35 @@ final class JobRepository: ObservableObject {
         }
     }
 
-    func saveSegments(forJobId jobId: String, segments: [Segment]) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(sql: "DELETE FROM segments WHERE job_id = ?", arguments: [jobId])
-                for var segment in segments {
-                    segment.jobId = jobId
-                    try segment.insert(db)
-                }
+    func saveSegments(forJobId jobId: String, segments: [Segment]) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            try db.execute(sql: "DELETE FROM segments WHERE job_id = ?", arguments: [jobId])
+            for var segment in segments {
+                segment.jobId = jobId
+                try segment.insert(db)
             }
-        } catch {
-            print("Failed to save segments: \(error)")
         }
     }
 
-    func updateSegment(id: String, text: String) {
-        guard let dbPool else { return }
-        do {
-            try dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE segments SET text = ? WHERE id = ?",
-                    arguments: [text, id]
-                )
-            }
-        } catch {
-            print("Failed to update segment: \(error)")
+    func updateSegment(id: String, text: String) throws {
+        guard let dbPool else { throw JobRepositoryError.databaseNotReady }
+        try dbPool.write { db in
+            try db.execute(
+                sql: "UPDATE segments SET text = ? WHERE id = ?",
+                arguments: [text, id]
+            )
+        }
+    }
+}
+
+enum JobRepositoryError: LocalizedError {
+    case databaseNotReady
+
+    var errorDescription: String? {
+        switch self {
+        case .databaseNotReady:
+            return "Database is not available."
         }
     }
 }

@@ -19,6 +19,7 @@ enum SenseVoiceASRServiceError: LocalizedError {
     case coreMLAssetsMissing
     case coreMLContractInvalid
     case coreMLOutputInvalid
+    case fftSetupFailed
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +41,8 @@ enum SenseVoiceASRServiceError: LocalizedError {
             return "The downloaded SenseVoice Core ML model does not match the expected runtime contract."
         case .coreMLOutputInvalid:
             return "SenseVoice Core ML returned an unexpected output shape."
+        case .fftSetupFailed:
+            return "SenseVoice failed to initialize the FFT processor."
         }
     }
 }
@@ -218,6 +221,7 @@ private final class SherpaOnnxSenseVoiceRuntime: @unchecked Sendable, SenseVoice
     private let recognizer: SherpaOnnxOfflineRecognizerWrapper
 
     init(modelURL: URL, tokensURL: URL, language: String) throws {
+        let pool = CPointerPool()
         let config = sherpaOnnxOfflineRecognizerConfig(
             featConfig: sherpaOnnxFeatureConfig(),
             model: sherpaOnnxOfflineModelConfig(
@@ -225,12 +229,15 @@ private final class SherpaOnnxSenseVoiceRuntime: @unchecked Sendable, SenseVoice
                 senseVoice: sherpaOnnxOfflineSenseVoiceModelConfig(
                     model: modelURL.path,
                     useInverseTextNormalization: true,
-                    language: language
+                    language: language,
+                    pool: pool
                 ),
                 numThreads: max(1, ProcessInfo.processInfo.processorCount / 2),
                 debug: false,
-                provider: "cpu"
-            )
+                provider: "cpu",
+                pool: pool
+            ),
+            pool: pool
         )
 
         let recognizer = try withUnsafePointer(to: config) { pointer in
@@ -296,7 +303,7 @@ private final class CoreMLSenseVoiceRuntime: @unchecked Sendable, SenseVoiceRunt
         self.model = try MLModel(contentsOf: modelURL, configuration: configuration)
         self.decoder = try SentencePieceDecoder(modelPath: sentencePieceURL.path)
         let cmvn = try SenseVoiceCMVN.load(from: cmvnURL)
-        self.featureExtractor = SenseVoiceCoreMLFeatureExtractor(cmvn: cmvn)
+        self.featureExtractor = try SenseVoiceCoreMLFeatureExtractor(cmvn: cmvn)
         self.contract = try Self.resolveContract(for: model)
         self.languageID = Self.languageID(for: language)
         self.textnormID = Self.defaultTextnormID
@@ -586,13 +593,13 @@ private struct SenseVoiceCoreMLFeatureExtractor: Sendable {
     private let fftSetup: FFTSetup
     private let hammingWindow: [Float]
 
-    init(cmvn: SenseVoiceCMVN) {
+    init(cmvn: SenseVoiceCMVN) throws {
         self.cmvn = cmvn
         self.hammingWindow = (0..<Self.frameSize).map { i in
             0.54 - 0.46 * cos((2 * .pi * Float(i)) / Float(Self.frameSize))
         }
         guard let fftSetup = vDSP_create_fftsetup(vDSP_Length(log2(Float(Self.fftSize))), FFTRadix(kFFTRadix2)) else {
-            fatalError("Failed to create SenseVoice FFT setup")
+            throw SenseVoiceASRServiceError.fftSetupFailed
         }
         self.fftSetup = fftSetup
     }
@@ -823,194 +830,212 @@ private struct SentencePieceDecoder: Sendable {
     }
 }
 
-private func toCPointer(_ string: String) -> UnsafePointer<CChar>? {
-    guard let pointer = strdup(string) else {
-        return nil
+private final class CPointerPool {
+    private var pointers: [UnsafeMutablePointer<CChar>] = []
+
+    func intern(_ string: String) -> UnsafePointer<CChar>? {
+        guard let pointer = strdup(string) else { return nil }
+        pointers.append(pointer)
+        return UnsafePointer(pointer)
     }
-    return UnsafePointer(pointer)
+
+    deinit {
+        for ptr in pointers {
+            ptr.deallocate()
+        }
+    }
+}
+
+private func toCPointer(_ string: String, pool: CPointerPool) -> UnsafePointer<CChar>? {
+    pool.intern(string)
 }
 
 private func sherpaOnnxFeatureConfig(sampleRate: Int32 = 16_000, featureDim: Int32 = 80) -> SherpaOnnxFeatureConfig {
     SherpaOnnxFeatureConfig(sample_rate: sampleRate, feature_dim: featureDim)
 }
 
+// swiftlint:disable:next function_parameter_count
 private func sherpaOnnxOfflineSenseVoiceModelConfig(
     model: String,
     useInverseTextNormalization: Bool,
-    language: String
+    language: String,
+    pool: CPointerPool
 ) -> SherpaOnnxOfflineSenseVoiceModelConfig {
     SherpaOnnxOfflineSenseVoiceModelConfig(
-        model: toCPointer(model),
-        language: toCPointer(language),
+        model: toCPointer(model, pool: pool),
+        language: toCPointer(language, pool: pool),
         use_itn: useInverseTextNormalization ? 1 : 0
     )
 }
 
+// swiftlint:disable:next function_body_length function_parameter_count
 private func sherpaOnnxOfflineModelConfig(
     tokens: String,
     senseVoice: SherpaOnnxOfflineSenseVoiceModelConfig,
     numThreads: Int,
     debug: Bool,
-    provider: String
+    provider: String,
+    pool: CPointerPool
 ) -> SherpaOnnxOfflineModelConfig {
     SherpaOnnxOfflineModelConfig(
-        transducer: sherpaOnnxOfflineTransducerModelConfig(),
-        paraformer: sherpaOnnxOfflineParaformerModelConfig(),
-        nemo_ctc: sherpaOnnxOfflineNemoEncDecCtcModelConfig(),
-        whisper: sherpaOnnxOfflineWhisperModelConfig(),
-        tdnn: sherpaOnnxOfflineTdnnModelConfig(),
-        tokens: toCPointer(tokens),
+        transducer: sherpaOnnxOfflineTransducerModelConfig(pool: pool),
+        paraformer: sherpaOnnxOfflineParaformerModelConfig(pool: pool),
+        nemo_ctc: sherpaOnnxOfflineNemoEncDecCtcModelConfig(pool: pool),
+        whisper: sherpaOnnxOfflineWhisperModelConfig(pool: pool),
+        tdnn: sherpaOnnxOfflineTdnnModelConfig(pool: pool),
+        tokens: toCPointer(tokens, pool: pool),
         num_threads: Int32(numThreads),
         debug: debug ? 1 : 0,
-        provider: toCPointer(provider),
-        model_type: toCPointer(""),
-        modeling_unit: toCPointer("cjkchar"),
-        bpe_vocab: toCPointer(""),
-        telespeech_ctc: toCPointer(""),
+        provider: toCPointer(provider, pool: pool),
+        model_type: toCPointer("", pool: pool),
+        modeling_unit: toCPointer("cjkchar", pool: pool),
+        bpe_vocab: toCPointer("", pool: pool),
+        telespeech_ctc: toCPointer("", pool: pool),
         sense_voice: senseVoice,
-        moonshine: sherpaOnnxOfflineMoonshineModelConfig(),
-        fire_red_asr: sherpaOnnxOfflineFireRedAsrModelConfig(),
-        dolphin: sherpaOnnxOfflineDolphinModelConfig(),
-        zipformer_ctc: sherpaOnnxOfflineZipformerCtcModelConfig(),
-        canary: sherpaOnnxOfflineCanaryModelConfig(),
-        wenet_ctc: sherpaOnnxOfflineWenetCtcModelConfig(),
-        omnilingual: sherpaOnnxOfflineOmnilingualAsrCtcModelConfig(),
-        medasr: sherpaOnnxOfflineMedAsrCtcModelConfig(),
-        funasr_nano: sherpaOnnxOfflineFunASRNanoModelConfig(),
-        fire_red_asr_ctc: sherpaOnnxOfflineFireRedAsrCtcModelConfig()
+        moonshine: sherpaOnnxOfflineMoonshineModelConfig(pool: pool),
+        fire_red_asr: sherpaOnnxOfflineFireRedAsrModelConfig(pool: pool),
+        dolphin: sherpaOnnxOfflineDolphinModelConfig(pool: pool),
+        zipformer_ctc: sherpaOnnxOfflineZipformerCtcModelConfig(pool: pool),
+        canary: sherpaOnnxOfflineCanaryModelConfig(pool: pool),
+        wenet_ctc: sherpaOnnxOfflineWenetCtcModelConfig(pool: pool),
+        omnilingual: sherpaOnnxOfflineOmnilingualAsrCtcModelConfig(pool: pool),
+        medasr: sherpaOnnxOfflineMedAsrCtcModelConfig(pool: pool),
+        funasr_nano: sherpaOnnxOfflineFunASRNanoModelConfig(pool: pool),
+        fire_red_asr_ctc: sherpaOnnxOfflineFireRedAsrCtcModelConfig(pool: pool)
     )
 }
 
 private func sherpaOnnxOfflineRecognizerConfig(
     featConfig: SherpaOnnxFeatureConfig,
-    model: SherpaOnnxOfflineModelConfig
+    model: SherpaOnnxOfflineModelConfig,
+    pool: CPointerPool
 ) -> SherpaOnnxOfflineRecognizerConfig {
     SherpaOnnxOfflineRecognizerConfig(
         feat_config: featConfig,
         model_config: model,
-        lm_config: sherpaOnnxOfflineLMConfig(),
-        decoding_method: toCPointer("greedy_search"),
+        lm_config: sherpaOnnxOfflineLMConfig(pool: pool),
+        decoding_method: toCPointer("greedy_search", pool: pool),
         max_active_paths: 4,
-        hotwords_file: toCPointer(""),
+        hotwords_file: toCPointer("", pool: pool),
         hotwords_score: 1.5,
-        rule_fsts: toCPointer(""),
-        rule_fars: toCPointer(""),
+        rule_fsts: toCPointer("", pool: pool),
+        rule_fars: toCPointer("", pool: pool),
         blank_penalty: 0,
-        hr: sherpaOnnxHomophoneReplacerConfig()
+        hr: sherpaOnnxHomophoneReplacerConfig(pool: pool)
     )
 }
 
-private func sherpaOnnxOfflineTransducerModelConfig() -> SherpaOnnxOfflineTransducerModelConfig {
+private func sherpaOnnxOfflineTransducerModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineTransducerModelConfig {
     SherpaOnnxOfflineTransducerModelConfig(
-        encoder: toCPointer(""),
-        decoder: toCPointer(""),
-        joiner: toCPointer("")
+        encoder: toCPointer("", pool: pool),
+        decoder: toCPointer("", pool: pool),
+        joiner: toCPointer("", pool: pool)
     )
 }
 
-private func sherpaOnnxOfflineParaformerModelConfig() -> SherpaOnnxOfflineParaformerModelConfig {
-    SherpaOnnxOfflineParaformerModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineParaformerModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineParaformerModelConfig {
+    SherpaOnnxOfflineParaformerModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineZipformerCtcModelConfig() -> SherpaOnnxOfflineZipformerCtcModelConfig {
-    SherpaOnnxOfflineZipformerCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineZipformerCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineZipformerCtcModelConfig {
+    SherpaOnnxOfflineZipformerCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineWenetCtcModelConfig() -> SherpaOnnxOfflineWenetCtcModelConfig {
-    SherpaOnnxOfflineWenetCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineWenetCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineWenetCtcModelConfig {
+    SherpaOnnxOfflineWenetCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineOmnilingualAsrCtcModelConfig() -> SherpaOnnxOfflineOmnilingualAsrCtcModelConfig {
-    SherpaOnnxOfflineOmnilingualAsrCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineOmnilingualAsrCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineOmnilingualAsrCtcModelConfig {
+    SherpaOnnxOfflineOmnilingualAsrCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineMedAsrCtcModelConfig() -> SherpaOnnxOfflineMedAsrCtcModelConfig {
-    SherpaOnnxOfflineMedAsrCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineMedAsrCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineMedAsrCtcModelConfig {
+    SherpaOnnxOfflineMedAsrCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineNemoEncDecCtcModelConfig() -> SherpaOnnxOfflineNemoEncDecCtcModelConfig {
-    SherpaOnnxOfflineNemoEncDecCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineNemoEncDecCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineNemoEncDecCtcModelConfig {
+    SherpaOnnxOfflineNemoEncDecCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineDolphinModelConfig() -> SherpaOnnxOfflineDolphinModelConfig {
-    SherpaOnnxOfflineDolphinModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineDolphinModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineDolphinModelConfig {
+    SherpaOnnxOfflineDolphinModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineWhisperModelConfig() -> SherpaOnnxOfflineWhisperModelConfig {
+private func sherpaOnnxOfflineWhisperModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineWhisperModelConfig {
     SherpaOnnxOfflineWhisperModelConfig(
-        encoder: toCPointer(""),
-        decoder: toCPointer(""),
-        language: toCPointer(""),
-        task: toCPointer("transcribe"),
+        encoder: toCPointer("", pool: pool),
+        decoder: toCPointer("", pool: pool),
+        language: toCPointer("", pool: pool),
+        task: toCPointer("transcribe", pool: pool),
         tail_paddings: -1,
         enable_token_timestamps: 0,
         enable_segment_timestamps: 0
     )
 }
 
-private func sherpaOnnxOfflineCanaryModelConfig() -> SherpaOnnxOfflineCanaryModelConfig {
+private func sherpaOnnxOfflineCanaryModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineCanaryModelConfig {
     SherpaOnnxOfflineCanaryModelConfig(
-        encoder: toCPointer(""),
-        decoder: toCPointer(""),
-        src_lang: toCPointer("en"),
-        tgt_lang: toCPointer("en"),
+        encoder: toCPointer("", pool: pool),
+        decoder: toCPointer("", pool: pool),
+        src_lang: toCPointer("en", pool: pool),
+        tgt_lang: toCPointer("en", pool: pool),
         use_pnc: 1
     )
 }
 
-private func sherpaOnnxOfflineFireRedAsrModelConfig() -> SherpaOnnxOfflineFireRedAsrModelConfig {
+private func sherpaOnnxOfflineFireRedAsrModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineFireRedAsrModelConfig {
     SherpaOnnxOfflineFireRedAsrModelConfig(
-        encoder: toCPointer(""),
-        decoder: toCPointer("")
+        encoder: toCPointer("", pool: pool),
+        decoder: toCPointer("", pool: pool)
     )
 }
 
-private func sherpaOnnxOfflineMoonshineModelConfig() -> SherpaOnnxOfflineMoonshineModelConfig {
+private func sherpaOnnxOfflineMoonshineModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineMoonshineModelConfig {
     SherpaOnnxOfflineMoonshineModelConfig(
-        preprocessor: toCPointer(""),
-        encoder: toCPointer(""),
-        uncached_decoder: toCPointer(""),
-        cached_decoder: toCPointer(""),
-        merged_decoder: toCPointer("")
+        preprocessor: toCPointer("", pool: pool),
+        encoder: toCPointer("", pool: pool),
+        uncached_decoder: toCPointer("", pool: pool),
+        cached_decoder: toCPointer("", pool: pool),
+        merged_decoder: toCPointer("", pool: pool)
     )
 }
 
-private func sherpaOnnxOfflineTdnnModelConfig() -> SherpaOnnxOfflineTdnnModelConfig {
-    SherpaOnnxOfflineTdnnModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineTdnnModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineTdnnModelConfig {
+    SherpaOnnxOfflineTdnnModelConfig(model: toCPointer("", pool: pool))
 }
 
-private func sherpaOnnxOfflineLMConfig() -> SherpaOnnxOfflineLMConfig {
-    SherpaOnnxOfflineLMConfig(model: toCPointer(""), scale: 1.0)
+private func sherpaOnnxOfflineLMConfig(pool: CPointerPool) -> SherpaOnnxOfflineLMConfig {
+    SherpaOnnxOfflineLMConfig(model: toCPointer("", pool: pool), scale: 1.0)
 }
 
-private func sherpaOnnxOfflineFunASRNanoModelConfig() -> SherpaOnnxOfflineFunASRNanoModelConfig {
+private func sherpaOnnxOfflineFunASRNanoModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineFunASRNanoModelConfig {
     SherpaOnnxOfflineFunASRNanoModelConfig(
-        encoder_adaptor: toCPointer(""),
-        llm: toCPointer(""),
-        embedding: toCPointer(""),
-        tokenizer: toCPointer(""),
-        system_prompt: toCPointer("You are a helpful assistant."),
-        user_prompt: toCPointer("Transcribe speech:"),
+        encoder_adaptor: toCPointer("", pool: pool),
+        llm: toCPointer("", pool: pool),
+        embedding: toCPointer("", pool: pool),
+        tokenizer: toCPointer("", pool: pool),
+        system_prompt: toCPointer("You are a helpful assistant.", pool: pool),
+        user_prompt: toCPointer("Transcribe speech:", pool: pool),
         max_new_tokens: 512,
         temperature: 1e-6,
         top_p: 0.8,
         seed: 42,
-        language: toCPointer(""),
+        language: toCPointer("", pool: pool),
         itn: 1,
-        hotwords: toCPointer("")
+        hotwords: toCPointer("", pool: pool)
     )
 }
 
-private func sherpaOnnxHomophoneReplacerConfig() -> SherpaOnnxHomophoneReplacerConfig {
+private func sherpaOnnxHomophoneReplacerConfig(pool: CPointerPool) -> SherpaOnnxHomophoneReplacerConfig {
     SherpaOnnxHomophoneReplacerConfig(
-        dict_dir: toCPointer(""),
-        lexicon: toCPointer(""),
-        rule_fsts: toCPointer("")
+        dict_dir: toCPointer("", pool: pool),
+        lexicon: toCPointer("", pool: pool),
+        rule_fsts: toCPointer("", pool: pool)
     )
 }
 
-private func sherpaOnnxOfflineFireRedAsrCtcModelConfig() -> SherpaOnnxOfflineFireRedAsrCtcModelConfig {
-    SherpaOnnxOfflineFireRedAsrCtcModelConfig(model: toCPointer(""))
+private func sherpaOnnxOfflineFireRedAsrCtcModelConfig(pool: CPointerPool) -> SherpaOnnxOfflineFireRedAsrCtcModelConfig {
+    SherpaOnnxOfflineFireRedAsrCtcModelConfig(model: toCPointer("", pool: pool))
 }
 
 private final class SherpaOnnxOfflineRecognitionResultWrapper {

@@ -1,9 +1,13 @@
 import SwiftUI
 
 struct HistoryView: View {
-    @StateObject private var viewModel = HistoryViewModel()
+    @StateObject private var viewModel: HistoryViewModel
     @State private var showDeleteConfirmation = false
     @State private var jobToDelete: Job?
+
+    init(repository: JobRepository = .shared) {
+        _viewModel = StateObject(wrappedValue: HistoryViewModel(repository: repository))
+    }
 
     var body: some View {
         Group {

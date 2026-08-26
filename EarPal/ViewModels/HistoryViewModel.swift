@@ -13,8 +13,13 @@ final class HistoryViewModel: ObservableObject {
     @Published var editingSegmentId: String?
     @Published var editingSegmentText: String = ""
     @Published var showPresenterMode = false
+    @Published var lastExportURL: URL?
 
-    private let repository = JobRepository.shared
+    private let repository: JobRepository
+
+    init(repository: JobRepository = .shared) {
+        self.repository = repository
+    }
 
     func loadJobs() {
         jobs = repository.getAllJobs()
@@ -26,7 +31,11 @@ final class HistoryViewModel: ObservableObject {
     }
 
     func deleteJob(_ job: Job) {
-        repository.deleteJob(id: job.id)
+        do {
+            try repository.deleteJob(id: job.id)
+        } catch {
+            errorMessage = "Delete failed: \(error.localizedDescription)"
+        }
         if selectedJob?.id == job.id {
             selectedJob = nil
             jobSegments = []
@@ -38,7 +47,8 @@ final class HistoryViewModel: ObservableObject {
         guard let job = selectedJob else { return }
         showExportSheet = false
         do {
-            let _ = try ExportManager.export(job: job, segments: jobSegments, format: format)
+            let url = try ExportManager.export(job: job, segments: jobSegments, format: format)
+            lastExportURL = url
         } catch {
             errorMessage = "Export failed: \(error.localizedDescription)"
         }
@@ -51,7 +61,11 @@ final class HistoryViewModel: ObservableObject {
 
     func saveSegmentEdit() {
         guard let segmentId = editingSegmentId else { return }
-        repository.updateSegment(id: segmentId, text: editingSegmentText)
+        do {
+            try repository.updateSegment(id: segmentId, text: editingSegmentText)
+        } catch {
+            errorMessage = "Save failed: \(error.localizedDescription)"
+        }
 
         if let idx = jobSegments.firstIndex(where: { $0.id == segmentId }) {
             jobSegments[idx].text = editingSegmentText
@@ -59,8 +73,12 @@ final class HistoryViewModel: ObservableObject {
 
         if let job = selectedJob {
             let fullText = jobSegments.map(\.text).joined(separator: " ")
-            repository.updateJobTranscript(id: job.id, text: fullText)
-            selectedJob = repository.getJob(id: job.id)
+            do {
+                try repository.updateJobTranscript(id: job.id, text: fullText)
+                selectedJob = repository.getJob(id: job.id)
+            } catch {
+                errorMessage = "Update transcript failed: \(error.localizedDescription)"
+            }
         }
 
         editingSegmentId = nil

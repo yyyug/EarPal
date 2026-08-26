@@ -24,6 +24,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
 struct RootView: View {
     @EnvironmentObject private var modelManager: ModelManager
     @EnvironmentObject private var viewModel: LiveTranslateViewModel
+    @EnvironmentObject private var jobRepository: JobRepository
     @State private var selectedTab: SidebarTab = .translate
 
     var body: some View {
@@ -35,7 +36,7 @@ struct RootView: View {
                 .tag(SidebarTab.translate)
 
             NavigationStack {
-                HistoryView()
+                HistoryView(repository: jobRepository)
             }
             .tabItem {
                 Label(SidebarTab.history.displayName, systemImage: SidebarTab.history.icon)
@@ -47,7 +48,9 @@ struct RootView: View {
 
 #Preview {
     let modelManager = ModelManager()
+    let jobRepository = JobRepository.shared
     RootView()
         .environmentObject(modelManager)
-        .environmentObject(LiveTranslateViewModel(modelManager: modelManager))
+        .environmentObject(LiveTranslateViewModel(modelManager: modelManager, jobRepository: jobRepository))
+        .environmentObject(jobRepository)
 }

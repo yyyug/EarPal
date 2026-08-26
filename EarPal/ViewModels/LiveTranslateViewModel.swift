@@ -157,26 +157,34 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func createNewJob() {
-        let job = jobRepository.createJob(
-            name: sourceLanguage.displayName + " → " + targetLanguage.displayName
-        )
-        var updated = job
-        updated.sourceLanguage = sourceLanguage.id
-        updated.targetLanguage = targetLanguage.id
-        updated.asrEngine = modelManager.selectedASREngine.rawValue
-        updated.translationEngine = modelManager.selectedTranslationEngine.rawValue
-        updated.status = .recording
-        jobRepository.updateJob(updated)
-        currentJob = updated
+        do {
+            let job = try jobRepository.createJob(
+                name: sourceLanguage.displayName + " → " + targetLanguage.displayName
+            )
+            var updated = job
+            updated.sourceLanguage = sourceLanguage.id
+            updated.targetLanguage = targetLanguage.id
+            updated.asrEngine = modelManager.selectedASREngine.rawValue
+            updated.translationEngine = modelManager.selectedTranslationEngine.rawValue
+            updated.status = .recording
+            try jobRepository.updateJob(updated)
+            currentJob = updated
+        } catch {
+            statusMessage = "Failed to save recording: \(error.localizedDescription)"
+        }
     }
 
     private func finalizeCurrentJob() {
         guard let job = currentJob else { return }
-        if !transcriptText.isEmpty || job.status == .recording {
-            jobRepository.updateJobTranscript(id: job.id, text: transcriptText)
-            jobRepository.updateJobStatus(id: job.id, status: .completed)
-        } else {
-            jobRepository.deleteJob(id: job.id)
+        do {
+            if !transcriptText.isEmpty || job.status == .recording {
+                try jobRepository.updateJobTranscript(id: job.id, text: transcriptText)
+                try jobRepository.updateJobStatus(id: job.id, status: .completed)
+            } else {
+                try jobRepository.deleteJob(id: job.id)
+            }
+        } catch {
+            statusMessage = "Failed to save: \(error.localizedDescription)"
         }
         currentJob = nil
     }
@@ -478,11 +486,15 @@ final class LiveTranslateViewModel: ObservableObject {
         translationStatus = .idle
 
         if let job = currentJob {
-            jobRepository.updateJobTranslation(
-                id: job.id,
-                translatedText: normalizedTranslation,
-                language: targetLanguage.id
-            )
+            do {
+                try jobRepository.updateJobTranslation(
+                    id: job.id,
+                    translatedText: normalizedTranslation,
+                    language: targetLanguage.id
+                )
+            } catch {
+                translationStatus = .failed("Failed to save translation: \(error.localizedDescription)")
+            }
         }
 
         if autoSpeak {
