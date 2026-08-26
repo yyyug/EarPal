@@ -7,6 +7,7 @@ final class JobRepository: ObservableObject {
     private var dbPool: DatabasePool?
 
     @Published private(set) var isReady = false
+    @Published private(set) var errorMessage: String?
 
     init() {
         setup()
@@ -18,7 +19,9 @@ final class JobRepository: ObservableObject {
                 for: .applicationSupportDirectory,
                 in: .userDomainMask
             ).first else {
-                print("JobRepository: Cannot locate Application Support directory")
+                Task { @MainActor in
+                    self.errorMessage = "Cannot locate Application Support directory."
+                }
                 return
             }
             let dbURL = appSupport.appendingPathComponent("earpal.db")
@@ -29,6 +32,9 @@ final class JobRepository: ObservableObject {
             }
         } catch {
             print("JobRepository setup failed: \(error)")
+            Task { @MainActor in
+                self.errorMessage = "Database setup failed: \(error.localizedDescription)"
+            }
         }
     }
 

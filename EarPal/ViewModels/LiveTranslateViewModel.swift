@@ -46,6 +46,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private let localASRService: LocalASRService
     private let speechPlaybackService: AppleSpeechPlaybackService
     private let jobRepository: JobRepository
+    private let inferenceRuntime: LocalInferenceRuntime
     private var currentJob: Job?
     private var localStreamingSession: LocalASRStreamingSession?
     private var translationDebounceTask: Task<Void, Never>?
@@ -76,6 +77,7 @@ final class LiveTranslateViewModel: ObservableObject {
         self.localASRService = localASRService
         self.speechPlaybackService = speechPlaybackService ?? AppleSpeechPlaybackService()
         self.jobRepository = jobRepository
+        self.inferenceRuntime = LocalInferenceRuntime(modelManager: modelManager)
         self.isTranslationEnabled = defaults.object(forKey: Self.translationEnabledKey) as? Bool ?? true
 
         self.speechRecognizer.onText = { [weak self] text in
@@ -446,7 +448,7 @@ final class LiveTranslateViewModel: ObservableObject {
             activeTranslationTask = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let translatedText = try await LocalInferenceRuntime(modelManager: self.modelManager)
+                    let translatedText = try await self.inferenceRuntime
                         .translateWithTranslateGemma(
                             text: normalized,
                             sourceLanguage: self.sourceLanguage,
