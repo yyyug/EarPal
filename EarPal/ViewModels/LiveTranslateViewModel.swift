@@ -45,6 +45,8 @@ final class LiveTranslateViewModel: ObservableObject {
     private let audioRecorder: AudioCaptureRecorder
     private let localASRService: LocalASRService
     private let speechPlaybackService: AppleSpeechPlaybackService
+    private let jobRepository: JobRepository
+    private var currentJob: Job?
     private var localStreamingSession: LocalASRStreamingSession?
     private var translationDebounceTask: Task<Void, Never>?
     private var activeTranslationTask: Task<Void, Never>?
@@ -65,13 +67,15 @@ final class LiveTranslateViewModel: ObservableObject {
         speechRecognizer: AppleSpeechRecognizer? = nil,
         audioRecorder: AudioCaptureRecorder? = nil,
         localASRService: LocalASRService = LocalASRService(),
-        speechPlaybackService: AppleSpeechPlaybackService? = nil
+        speechPlaybackService: AppleSpeechPlaybackService? = nil,
+        jobRepository: JobRepository = .shared
     ) {
         self.modelManager = modelManager
         self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
         self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
         self.localASRService = localASRService
         self.speechPlaybackService = speechPlaybackService ?? AppleSpeechPlaybackService()
+        self.jobRepository = jobRepository
         self.isTranslationEnabled = defaults.object(forKey: Self.translationEnabledKey) as? Bool ?? true
 
         self.speechRecognizer.onText = { [weak self] text in
@@ -129,6 +133,7 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     func clearSession() {
+        finalizeCurrentJob()
         let session = localStreamingSession
         localStreamingSession = nil
         Task {
@@ -149,6 +154,31 @@ final class LiveTranslateViewModel: ObservableObject {
         lastCompletedDisplayTranscript = ""
         lastSpokenTranscriptText = ""
         lastSpokenLanguageID = ""
+    }
+
+    private func createNewJob() {
+        let job = jobRepository.createJob(
+            name: sourceLanguage.displayName + " → " + targetLanguage.displayName
+        )
+        var updated = job
+        updated.sourceLanguage = sourceLanguage.id
+        updated.targetLanguage = targetLanguage.id
+        updated.asrEngine = modelManager.selectedASREngine.rawValue
+        updated.translationEngine = modelManager.selectedTranslationEngine.rawValue
+        updated.status = .recording
+        jobRepository.updateJob(updated)
+        currentJob = updated
+    }
+
+    private func finalizeCurrentJob() {
+        guard let job = currentJob else { return }
+        if !transcriptText.isEmpty || job.status == .recording {
+            jobRepository.updateJobTranscript(id: job.id, text: transcriptText)
+            jobRepository.updateJobStatus(id: job.id, status: .completed)
+        } else {
+            jobRepository.deleteJob(id: job.id)
+        }
+        currentJob = nil
     }
 
     func receiveAppleTranslation(_ translatedText: String, for request: AppleTranslationRequest) {
@@ -206,6 +236,7 @@ final class LiveTranslateViewModel: ObservableObject {
 
     private func startListening() async {
         clearSession()
+        createNewJob()
 
         if modelManager.selectedASREngine != .apple {
             guard modelManager.canUse(modelManager.selectedASREngine) else {
@@ -445,6 +476,14 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedEngineID = modelManager.selectedTranslationEngine.rawValue
         lastCompletedDisplayTranscript = lastTranslatedTranscriptText
         translationStatus = .idle
+
+        if let job = currentJob {
+            jobRepository.updateJobTranslation(
+                id: job.id,
+                translatedText: normalizedTranslation,
+                language: targetLanguage.id
+            )
+        }
 
         if autoSpeak {
             speechPlaybackService.speak(

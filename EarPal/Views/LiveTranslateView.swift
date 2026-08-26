@@ -3,6 +3,7 @@ import SwiftUI
 struct LiveTranslateView: View {
     @EnvironmentObject private var viewModel: LiveTranslateViewModel
     @EnvironmentObject private var modelManager: ModelManager
+    @State private var showPresenterMode = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +29,12 @@ struct LiveTranslateView: View {
                 SettingsSheet()
                     .environmentObject(viewModel)
                     .environmentObject(modelManager)
+            }
+            .fullScreenCover(isPresented: $showPresenterMode) {
+                PresenterView(
+                    text: viewModel.translatedText.isEmpty ? viewModel.transcriptText : viewModel.translatedText,
+                    onDismiss: { showPresenterMode = false }
+                )
             }
             .overlay(alignment: .topLeading) {
                 appleTranslationBridge
@@ -89,6 +96,15 @@ struct LiveTranslateView: View {
             primaryAction
 
             Spacer()
+
+            Button {
+                showPresenterMode = true
+            } label: {
+                Image(systemName: "rectangle.inset.filled.and.person.filled")
+                    .font(.title3)
+            }
+            .disabled(viewModel.transcriptText.isEmpty)
+            .accessibilityLabel("Presenter Mode")
 
             Button("Settings") {
                 viewModel.isShowingAudioOptions = true

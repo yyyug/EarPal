@@ -25,6 +25,12 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Inspect Apple toolchain
+        id: toolchain
+        run: |
+          echo "xcode_version=$(xcodebuild -version | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
+          echo "iphoneos_sdk=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
+
       - name: Restore Xcode package cache
         uses: actions/cache@v4
         with:
@@ -33,15 +39,10 @@ jobs:
             ${{ env.CLONED_SOURCE_PACKAGES_PATH }}
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
-          key: ${{ runner.os }}-xcode-packages-${{ hashFiles('EarPal.xcodeproj/project.pbxproj', 'Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
+          key: ${{ runner.os }}-xcode${{ steps.toolchain.outputs.xcode_version }}-sdk${{ steps.toolchain.outputs.iphoneos_sdk }}-packages-${{ hashFiles('EarPal.xcodeproj/project.pbxproj', 'Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
           restore-keys: |
+            ${{ runner.os }}-xcode${{ steps.toolchain.outputs.xcode_version }}-sdk${{ steps.toolchain.outputs.iphoneos_sdk }}-packages-
             ${{ runner.os }}-xcode-packages-
-
-      - name: Inspect Apple toolchain
-        id: toolchain
-        run: |
-          echo "xcode_version=$(xcodebuild -version | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
-          echo "iphoneos_sdk=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
 
       - name: Install CocoaPods
         run: |
@@ -55,7 +56,12 @@ jobs:
             Pods
             EarPal.xcworkspace
             Podfile.lock
+            ~/Library/Caches/CocoaPods
+            ~/Library/Caches/org.cocoapods.CocoaPods
+            ~/.cocoapods/repos
           key: ${{ runner.os }}-cocoapods-xcode${{ steps.toolchain.outputs.xcode_version }}-${{ hashFiles('Podfile', '.github/workflows/build-unsigned-ipa.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-cocoapods-xcode${{ steps.toolchain.outputs.xcode_version }}-
 
       - name: Check CocoaPods state
         id: pod-state
