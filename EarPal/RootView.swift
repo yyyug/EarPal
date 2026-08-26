@@ -28,9 +28,11 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SidebarTab.allCases, selection: $selectedTab) { tab in
-                Label(tab.displayName, systemImage: tab.icon)
-                    .tag(tab)
+            List(selection: $selectedTab) {
+                ForEach(SidebarTab.allCases) { tab in
+                    Label(tab.displayName, systemImage: tab.icon)
+                        .tag(tab)
+                }
             }
             .navigationTitle("EarPal")
         } detail: {
