@@ -27,23 +27,20 @@ struct RootView: View {
     @State private var selectedTab: SidebarTab = .translate
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $selectedTab) {
-                ForEach(SidebarTab.allCases) { tab in
-                    Label(tab.displayName, systemImage: tab.icon)
-                        .tag(tab)
+        TabView(selection: $selectedTab) {
+            LiveTranslateView()
+                .tabItem {
+                    Label(SidebarTab.translate.displayName, systemImage: SidebarTab.translate.icon)
                 }
+                .tag(SidebarTab.translate)
+
+            NavigationStack {
+                HistoryView()
             }
-            .navigationTitle("EarPal")
-        } detail: {
-            switch selectedTab {
-            case .translate:
-                LiveTranslateView()
-            case .history:
-                NavigationStack {
-                    HistoryView()
-                }
+            .tabItem {
+                Label(SidebarTab.history.displayName, systemImage: SidebarTab.history.icon)
             }
+            .tag(SidebarTab.history)
         }
     }
 }
