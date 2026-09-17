@@ -123,8 +123,15 @@ jobs:
           cd "$RUNNER_TEMP"
           /usr/bin/zip -qry EarPal-unsigned.ipa Payload
 
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: EarPal-unsigned-ipa
-          path: ${{ runner.temp }}/EarPal-unsigned.ipa
+      - name: Publish IPA to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="unsigned-ipa"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/EarPal-unsigned.ipa" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$RUNNER_TEMP/EarPal-unsigned.ipa" \
+              --title "EarPal unsigned IPA" \
+              --notes "Latest unsigned build of the \`codex/sensevoice-alt-runtimes\` branch."
+          fi
