@@ -42,6 +42,8 @@
 		B10000010000000000000036 /* JobDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000036 /* JobDetailView.swift */; };
 		B10000010000000000000037 /* TranscriptEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000037 /* TranscriptEditor.swift */; };
 		B10000010000000000000038 /* PresenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000038 /* PresenterView.swift */; };
+		B1000001000000000000003B /* AudioSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001010000000000000039 /* AudioSource.swift */; };
+		B1000001000000000000003C /* ScreenCaptureAudioSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000101000000000000003A /* ScreenCaptureAudioSource.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -79,6 +81,8 @@
 		B10001010000000000000036 /* JobDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobDetailView.swift; sourceTree = "<group>"; };
 		B10001010000000000000037 /* TranscriptEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptEditor.swift; sourceTree = "<group>"; };
 		B10001010000000000000038 /* PresenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresenterView.swift; sourceTree = "<group>"; };
+		B10001010000000000000039 /* AudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSource.swift; sourceTree = "<group>"; };
+		B1000101000000000000003A /* ScreenCaptureAudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenCaptureAudioSource.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -168,6 +172,8 @@
 				B10001010000000000000009 /* ModelManager.swift */,
 				B10001010000000000000010 /* AppleSpeechRecognizer.swift */,
 				B10001010000000000000014 /* AudioCaptureRecorder.swift */,
+				B10001010000000000000039 /* AudioSource.swift */,
+				B1000101000000000000003A /* ScreenCaptureAudioSource.swift */,
 				B10001010000000000000011 /* LocalInferenceRuntime.swift */,
 				B10001010000000000000015 /* LocalASRService.swift */,
 				B10001010000000000000016 /* TranslateGemmaService.swift */,
@@ -312,6 +318,8 @@
 				B10000010000000000000008 /* ModelManager.swift in Sources */,
 				B10000010000000000000009 /* AppleSpeechRecognizer.swift in Sources */,
 				B1000001000000000000000D /* AudioCaptureRecorder.swift in Sources */,
+				B1000001000000000000003B /* AudioSource.swift in Sources */,
+				B1000001000000000000003C /* ScreenCaptureAudioSource.swift in Sources */,
 				B1000001000000000000000A /* LocalInferenceRuntime.swift in Sources */,
 				B1000001000000000000000E /* LocalASRService.swift in Sources */,
 				B10000010000000000000013 /* TranslateGemmaService.swift in Sources */,
@@ -386,7 +394,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EarPal/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -420,7 +428,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = EarPal/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -445,7 +453,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			};
@@ -455,7 +463,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 			};

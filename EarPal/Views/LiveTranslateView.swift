@@ -92,29 +92,68 @@ struct LiveTranslateView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 12) {
-            primaryAction
+        VStack(spacing: 10) {
+            sourceSelector
 
-            Spacer()
+            HStack(spacing: 12) {
+                primaryAction
 
-            Button {
-                showPresenterMode = true
-            } label: {
-                Image(systemName: "rectangle.inset.filled.and.person.filled")
-                    .font(.title3)
+                Spacer()
+
+                Button {
+                    showPresenterMode = true
+                } label: {
+                    Image(systemName: "rectangle.inset.filled.and.person.filled")
+                        .font(.title3)
+                }
+                .disabled(viewModel.transcriptText.isEmpty)
+                .accessibilityLabel("Presenter Mode")
+
+                Button("Settings") {
+                    viewModel.isShowingAudioOptions = true
+                }
+                .buttonStyle(.bordered)
             }
-            .disabled(viewModel.transcriptText.isEmpty)
-            .accessibilityLabel("Presenter Mode")
-
-            Button("Settings") {
-                viewModel.isShowingAudioOptions = true
-            }
-            .buttonStyle(.bordered)
         }
         .padding(.horizontal, 20)
         .padding(.top, 10)
         .padding(.bottom, 8)
         .background(.ultraThinMaterial)
+    }
+
+    private var sourceSelector: some View {
+        VStack(spacing: 6) {
+            Picker(
+                "Audio Source",
+                selection: Binding(
+                    get: { viewModel.audioSource },
+                    set: { viewModel.setAudioSource($0) }
+                )
+            ) {
+                ForEach(AudioCaptureSourceOption.allCases) { source in
+                    Label(source.displayName, systemImage: source.iconName)
+                        .tag(source)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if viewModel.audioSource == .screenAudio {
+                Text(screenSourceStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var screenSourceStatusText: String {
+        if viewModel.isPreparingScreenCapture {
+            return "Choose the screen whose audio you want to translate..."
+        }
+        if viewModel.isScreenCapturePrepared {
+            return "Screen audio ready. Tap Start to translate what is playing."
+        }
+        return "Tap Start to choose the screen whose audio you want to translate."
     }
 
     private var settingsPresented: Binding<Bool> {

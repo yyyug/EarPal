@@ -5,6 +5,7 @@ import Foundation
 final class LiveTranslateViewModel: ObservableObject {
     private static let speechSegmentationPauseThreshold: TimeInterval = 1.0
     private static let translationEnabledKey = "live.translation.enabled"
+    private static let audioSourceKey = "live.audio.source"
 
     struct AppleTranslationRequest: Equatable {
         let id = UUID()
@@ -24,6 +25,9 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var sourceLanguage = TranslationLanguage.english
     @Published var targetLanguage = TranslationLanguage.traditionalChinese
     @Published var isTranslationEnabled = true
+    @Published var audioSource = AudioCaptureSourceOption.microphone
+    @Published var isScreenCapturePrepared = false
+    @Published var isPreparingScreenCapture = false
     @Published var transcriptText = ""
     @Published var translatedText = ""
     @Published var isListening = false
@@ -43,6 +47,8 @@ final class LiveTranslateViewModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private let speechRecognizer: AppleSpeechRecognizer
     private let audioRecorder: AudioCaptureRecorder
+    private let microphoneSource: MicrophoneAudioSource
+    private let screenAudioSource: ScreenCaptureAudioSource
     private let localASRService: LocalASRService
     private let speechPlaybackService: AppleSpeechPlaybackService
     private let jobRepository: JobRepository
@@ -74,11 +80,15 @@ final class LiveTranslateViewModel: ObservableObject {
         self.modelManager = modelManager
         self.speechRecognizer = speechRecognizer ?? AppleSpeechRecognizer()
         self.audioRecorder = audioRecorder ?? AudioCaptureRecorder()
+        self.microphoneSource = MicrophoneAudioSource(recorder: self.audioRecorder)
+        self.screenAudioSource = ScreenCaptureAudioSource()
         self.localASRService = localASRService
         self.speechPlaybackService = speechPlaybackService ?? AppleSpeechPlaybackService()
         self.jobRepository = jobRepository
         self.inferenceRuntime = LocalInferenceRuntime(modelManager: modelManager)
         self.isTranslationEnabled = defaults.object(forKey: Self.translationEnabledKey) as? Bool ?? true
+        self.audioSource = AudioCaptureSourceOption(rawValue: defaults.string(forKey: Self.audioSourceKey) ?? "")
+            ?? .microphone
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
@@ -132,6 +142,42 @@ final class LiveTranslateViewModel: ObservableObject {
         } else {
             refreshTranslationIfNeeded()
         }
+    }
+
+    func setAudioSource(_ source: AudioCaptureSourceOption) {
+        guard source != audioSource else { return }
+        if isListening {
+            stopListening()
+        }
+        audioSource = source
+        defaults.set(source.rawValue, forKey: Self.audioSourceKey)
+
+        if source == .screenAudio {
+            Task { await prepareScreenCapture() }
+        } else {
+            isScreenCapturePrepared = false
+        }
+    }
+
+    func prepareScreenCapture() async {
+        guard audioSource == .screenAudio else { return }
+        guard !isScreenCapturePrepared else { return }
+        guard !isPreparingScreenCapture else { return }
+
+        isPreparingScreenCapture = true
+        defer { isPreparingScreenCapture = false }
+
+        do {
+            try await screenAudioSource.prepare()
+            isScreenCapturePrepared = screenAudioSource.isPrepared
+        } catch is CancellationError {
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private var activeAudioSource: AudioSource {
+        audioSource == .screenAudio ? screenAudioSource : microphoneSource
     }
 
     func clearSession() {
@@ -254,10 +300,21 @@ final class LiveTranslateViewModel: ObservableObject {
                 return
             }
 
-            let allowed = await audioRecorder.requestPermission()
-            guard allowed else {
-                statusMessage = "Microphone permission is not available."
-                return
+            switch audioSource {
+            case .microphone:
+                let allowed = await audioRecorder.requestPermission()
+                guard allowed else {
+                    statusMessage = "Microphone permission is not available."
+                    return
+                }
+            case .screenAudio:
+                if !isScreenCapturePrepared {
+                    await prepareScreenCapture()
+                }
+                guard isScreenCapturePrepared else {
+                    statusMessage = "Choose a screen to capture before listening."
+                    return
+                }
             }
 
             do {
@@ -279,7 +336,7 @@ final class LiveTranslateViewModel: ObservableObject {
                     }
                 )
                 localStreamingSession = session
-                try audioRecorder.startRecording(onSamples: { samples, _ in
+                try await activeAudioSource.start(onSamples: { samples, _ in
                     Task {
                         await session.append(samples: samples)
                     }
@@ -294,6 +351,11 @@ final class LiveTranslateViewModel: ObservableObject {
                 }
                 statusMessage = error.localizedDescription
             }
+            return
+        }
+
+        guard audioSource != .screenAudio else {
+            statusMessage = AudioSourceError.screenAudioRequiresOfflineASR.localizedDescription
             return
         }
 
@@ -315,7 +377,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private func stopListening() {
         if modelManager.selectedASREngine != .apple {
             do {
-                try audioRecorder.stopRecording()
+                try activeAudioSource.stop()
                 isListening = false
                 statusMessage = "Finalizing offline transcription..."
                 let session = localStreamingSession
