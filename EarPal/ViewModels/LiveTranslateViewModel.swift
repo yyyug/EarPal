@@ -87,8 +87,11 @@ final class LiveTranslateViewModel: ObservableObject {
         self.jobRepository = jobRepository
         self.inferenceRuntime = LocalInferenceRuntime(modelManager: modelManager)
         self.isTranslationEnabled = defaults.object(forKey: Self.translationEnabledKey) as? Bool ?? true
-        self.audioSource = AudioCaptureSourceOption(rawValue: defaults.string(forKey: Self.audioSourceKey) ?? "")
+        let restoredSource = AudioCaptureSourceOption(rawValue: defaults.string(forKey: Self.audioSourceKey) ?? "")
             ?? .microphone
+        self.audioSource = (restoredSource == .screenAudio && !Self.screenAudioSupported)
+            ? .microphone
+            : restoredSource
 
         self.speechRecognizer.onText = { [weak self] text in
             self?.handleRecognizedText(text)
@@ -146,6 +149,10 @@ final class LiveTranslateViewModel: ObservableObject {
 
     func setAudioSource(_ source: AudioCaptureSourceOption) {
         guard source != audioSource else { return }
+        if source == .screenAudio, !screenAudioSupported {
+            statusMessage = "Screen audio capture requires iOS 27."
+            return
+        }
         if isListening {
             stopListening()
         }
@@ -288,6 +295,18 @@ final class LiveTranslateViewModel: ObservableObject {
         case .failed(let message):
             return message
         }
+    }
+
+    var screenAudioSupported: Bool {
+        Self.screenAudioSupported
+    }
+
+    static var screenAudioSupported: Bool {
+#if canImport(ScreenCaptureKit)
+        return true
+#else
+        return false
+#endif
     }
 
     private func startListening() async {

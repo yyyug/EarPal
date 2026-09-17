@@ -130,10 +130,12 @@ struct LiveTranslateView: View {
                     set: { viewModel.setAudioSource($0) }
                 )
             ) {
-                ForEach(AudioCaptureSourceOption.allCases) { source in
-                    Label(source.displayName, systemImage: source.iconName)
-                        .tag(source)
-                }
+ForEach(AudioCaptureSourceOption.allCases.filter { option in
+                option == .screenAudio ? viewModel.screenAudioSupported : true
+            }) { source in
+                Label(source.displayName, systemImage: source.iconName)
+                    .tag(source)
+            }
             }
             .pickerStyle(.segmented)
 

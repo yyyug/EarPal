@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     env:
       DERIVED_DATA_PATH: ${{ github.workspace }}/.ci/DerivedData
       CLONED_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci/SourcePackages

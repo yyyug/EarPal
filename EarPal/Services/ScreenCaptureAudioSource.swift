@@ -1,10 +1,14 @@
 import AVFAudio
 import Foundation
+
+#if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
+#endif
 
 enum ScreenCaptureAudioSourceError: LocalizedError {
     case notPrepared
     case selectionCancelled
+    case screenCaptureRequiresiOS27
 
     var errorDescription: String? {
         switch self {
@@ -12,9 +16,13 @@ enum ScreenCaptureAudioSourceError: LocalizedError {
             return "No screen was selected for audio capture."
         case .selectionCancelled:
             return "Screen sharing selection was cancelled."
+        case .screenCaptureRequiresiOS27:
+            return "Screen audio capture requires iOS 27."
         }
     }
 }
+
+#if canImport(ScreenCaptureKit)
 
 final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCStreamDelegate {
     private let targetFormat = AVAudioFormat(
@@ -225,3 +233,21 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         return outputBuffer
     }
 }
+
+#else
+
+final class ScreenCaptureAudioSource: NSObject, AudioSource {
+    var isPrepared: Bool { false }
+
+    func prepare() async throws {
+        throw ScreenCaptureAudioSourceError.screenCaptureRequiresiOS27
+    }
+
+    func start(onSamples: (@Sendable ([Float], Int) -> Void)?) async throws {
+        throw ScreenCaptureAudioSourceError.screenCaptureRequiresiOS27
+    }
+
+    func stop() throws {}
+}
+
+#endif
