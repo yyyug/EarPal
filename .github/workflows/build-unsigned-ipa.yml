@@ -7,12 +7,9 @@ on:
       - main
       - "codex/**"
 
-permissions:
-  contents: write
-
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27
     env:
       DERIVED_DATA_PATH: ${{ github.workspace }}/.ci/DerivedData
       CLONED_SOURCE_PACKAGES_PATH: ${{ github.workspace }}/.ci/SourcePackages
@@ -22,11 +19,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
 
       - name: Inspect Apple toolchain
         id: toolchain
@@ -126,15 +118,8 @@ jobs:
           cd "$RUNNER_TEMP"
           /usr/bin/zip -qry EarPal-unsigned.ipa Payload
 
-      - name: Publish IPA to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          RELEASE_TAG="unsigned-ipa"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/EarPal-unsigned.ipa" --clobber
-          else
-            gh release create "$RELEASE_TAG" "$RUNNER_TEMP/EarPal-unsigned.ipa" \
-              --title "EarPal unsigned IPA" \
-              --notes "Latest unsigned build of the \`codex/sensevoice-alt-runtimes\` branch."
-          fi
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: EarPal-unsigned-ipa
+          path: ${{ runner.temp }}/EarPal-unsigned.ipa
