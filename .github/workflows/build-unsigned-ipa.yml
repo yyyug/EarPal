@@ -26,6 +26,9 @@ jobs:
           echo "xcode_version=$(xcodebuild -version | awk 'NR==1 {print $2}')" >> "$GITHUB_OUTPUT"
           echo "iphoneos_sdk=$(xcrun --sdk iphoneos --show-sdk-version)" >> "$GITHUB_OUTPUT"
 
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Restore Xcode package cache
         uses: actions/cache@v4
         with:
