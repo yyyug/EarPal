@@ -24,7 +24,7 @@ enum ScreenCaptureAudioSourceError: LocalizedError {
 
 #if canImport(ScreenCaptureKit)
 
-final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCStreamDelegate {
+final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCStreamDelegate, SCContentSharingPickerObserver {
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16_000,
@@ -38,7 +38,12 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
     private var selectionContinuation: CheckedContinuation<Void, Error>?
     private var chunkHandler: (@Sendable ([Float], Int) -> Void)?
     private var converter: AVAudioConverter?
-    private var converterInputKey: (Double, Int)?
+    private var converterInputKey: AudioFormatKey?
+
+    private struct AudioFormatKey: Equatable {
+        let sampleRate: Double
+        let channelCount: Int
+    }
 
     var isPrepared: Bool {
         stateLock.lock()
@@ -88,7 +93,6 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 16_000
         configuration.channelCount = 1
-        configuration.captureMicrophone = false
 
         let newStream = SCStream(filter: filter, configuration: configuration, delegate: self)
         try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
@@ -114,6 +118,7 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
 
     // MARK: - SCContentSharingPickerObserver
 
+    @objc(contentSharingPicker:didUpdateWithFilter:forStream:)
     func contentSharingPicker(
         _ picker: SCContentSharingPicker,
         didUpdateWith filter: SCContentFilter,
@@ -127,6 +132,7 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         continuation?.resume()
     }
 
+    @objc(contentSharingPicker:didCancelForStream:)
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
         stateLock.lock()
         let continuation = selectionContinuation
@@ -135,6 +141,7 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         continuation?.resume(throwing: ScreenCaptureAudioSourceError.selectionCancelled)
     }
 
+    @objc(contentSharingPickerStartDidFailWithError:)
     func contentSharingPickerStartDidFailWithError(_ error: any Error) {
         stateLock.lock()
         let continuation = selectionContinuation
@@ -202,7 +209,10 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
     }
 
     private func convertToTarget(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        let inputKey = (buffer.format.sampleRate, Int(buffer.format.channelCount))
+        let inputKey = AudioFormatKey(
+            sampleRate: buffer.format.sampleRate,
+            channelCount: Int(buffer.format.channelCount)
+        )
         if converterInputKey != inputKey {
             converterInputKey = inputKey
             converter = AVAudioConverter(from: buffer.format, to: targetFormat)
