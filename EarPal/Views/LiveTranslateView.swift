@@ -39,6 +39,13 @@ struct LiveTranslateView: View {
             .overlay(alignment: .topLeading) {
                 appleTranslationBridge
             }
+            .overlay(alignment: .bottomTrailing) {
+                PictureInPictureHostView(displayLayer: viewModel.pictureInPicture.displayLayer)
+                    .frame(width: 16, height: 9)
+                    .opacity(0.01)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             .safeAreaInset(edge: .bottom) {
                 bottomBar
             }

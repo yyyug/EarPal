@@ -51,14 +51,3 @@ final class MicrophoneAudioSource: AudioSource {
         try recorder.stopRecording()
     }
 }
-
-enum AudioSourceError: LocalizedError {
-    case screenAudioRequiresOfflineASR
-
-    var errorDescription: String? {
-        switch self {
-        case .screenAudioRequiresOfflineASR:
-            return "Screen audio requires an offline speech recognition engine. Select SenseVoice, Parakeet, or Qwen3 in Settings."
-        }
-    }
-}

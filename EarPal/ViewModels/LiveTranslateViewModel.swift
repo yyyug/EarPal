@@ -49,6 +49,9 @@ final class LiveTranslateViewModel: ObservableObject {
     private let audioRecorder: AudioCaptureRecorder
     private let microphoneSource: MicrophoneAudioSource
     private let screenAudioSource: ScreenCaptureAudioSource
+    private let audioSessionCoordinator = AudioSessionCoordinator.shared
+    let pictureInPicture = TranscriptPictureInPictureController()
+    private var screenCaptureSessionActive = false
     private let localASRService: LocalASRService
     private let speechPlaybackService: AppleSpeechPlaybackService
     private let jobRepository: JobRepository
@@ -313,25 +316,28 @@ final class LiveTranslateViewModel: ObservableObject {
         clearSession()
         createNewJob()
 
+        if audioSource == .screenAudio {
+            if !isScreenCapturePrepared {
+                await prepareScreenCapture()
+            }
+            guard isScreenCapturePrepared else {
+                statusMessage = isPreparingScreenCapture
+                    ? "Choose the screen whose audio you want to translate."
+                    : "Screen sharing selection was cancelled."
+                return
+            }
+        }
+
         if modelManager.selectedASREngine != .apple {
             guard modelManager.canUse(modelManager.selectedASREngine) else {
                 statusMessage = "\(modelManager.selectedASREngine.displayName) is not installed on this device."
                 return
             }
 
-            switch audioSource {
-            case .microphone:
+            if audioSource == .microphone {
                 let allowed = await audioRecorder.requestPermission()
                 guard allowed else {
                     statusMessage = "Microphone permission is not available."
-                    return
-                }
-            case .screenAudio:
-                if !isScreenCapturePrepared {
-                    await prepareScreenCapture()
-                }
-                guard isScreenCapturePrepared else {
-                    statusMessage = "Choose a screen to capture before listening."
                     return
                 }
             }
@@ -355,48 +361,99 @@ final class LiveTranslateViewModel: ObservableObject {
                     }
                 )
                 localStreamingSession = session
-                try await activeAudioSource.start(onSamples: { samples, _ in
+                try await beginAudioCapture { samples, _ in
                     Task {
                         await session.append(samples: samples)
                     }
-                })
+                }
                 statusMessage = "Listening with \(modelManager.selectedASREngine.displayName) offline..."
                 isListening = true
+                startPictureInPictureIfNeeded()
             } catch {
                 let session = localStreamingSession
                 localStreamingSession = nil
                 Task {
                     await session?.cancel()
                 }
+                endScreenCaptureSessionIfNeeded()
                 statusMessage = error.localizedDescription
             }
             return
         }
 
-        guard audioSource != .screenAudio else {
-            statusMessage = AudioSourceError.screenAudioRequiresOfflineASR.localizedDescription
-            return
-        }
-
-        let allowed = await speechRecognizer.requestPermissions()
+        // The Apple engine reads the microphone directly and screen audio through
+        // caller-supplied buffers.
+        let allowed = await speechRecognizer.requestPermissions(requiresMicrophone: audioSource == .microphone)
         guard allowed else {
-            statusMessage = "Microphone or speech recognition permission is not available."
+            statusMessage = audioSource == .screenAudio
+                ? "Speech recognition permission is not available."
+                : "Microphone or speech recognition permission is not available."
             return
         }
 
         do {
-            try speechRecognizer.startRecognition(localeIdentifier: sourceLanguage.id)
+            if audioSource == .screenAudio {
+                let recognizer = speechRecognizer
+                try recognizer.startBufferRecognition(localeIdentifier: sourceLanguage.id)
+                do {
+                    try await beginAudioCapture { samples, _ in
+                        Task { @MainActor in
+                            recognizer.append(samples: samples, sampleRate: 16_000)
+                        }
+                    }
+                } catch {
+                    recognizer.stopRecognition()
+                    throw error
+                }
+            } else {
+                try speechRecognizer.startRecognition(localeIdentifier: sourceLanguage.id)
+            }
             statusMessage = ""
             isListening = true
+            startPictureInPictureIfNeeded()
         } catch {
+            endScreenCaptureSessionIfNeeded()
             statusMessage = error.localizedDescription
         }
     }
 
+    private func beginAudioCapture(onSamples: (@Sendable ([Float], Int) -> Void)?) async throws {
+        if audioSource == .screenAudio, !screenCaptureSessionActive {
+            try audioSessionCoordinator.activateScreenCaptureSession()
+            screenCaptureSessionActive = true
+        }
+
+        do {
+            try await activeAudioSource.start(onSamples: onSamples)
+        } catch {
+            endScreenCaptureSessionIfNeeded()
+            throw error
+        }
+    }
+
+    private func endScreenCaptureSessionIfNeeded() {
+        guard screenCaptureSessionActive else { return }
+        screenCaptureSessionActive = false
+        audioSessionCoordinator.deactivateScreenCaptureSession()
+    }
+
+    private func startPictureInPictureIfNeeded() {
+        guard pictureInPicture.isSupported else { return }
+        pictureInPicture.start()
+    }
+
+    private func updatePictureInPicture() {
+        let text = translatedText.isEmpty ? transcriptText : translatedText
+        pictureInPicture.update(text: text)
+    }
+
     private func stopListening() {
+        pictureInPicture.stop()
+
         if modelManager.selectedASREngine != .apple {
             do {
                 try activeAudioSource.stop()
+                endScreenCaptureSessionIfNeeded()
                 isListening = false
                 statusMessage = "Finalizing offline transcription..."
                 let session = localStreamingSession
@@ -408,6 +465,7 @@ final class LiveTranslateViewModel: ObservableObject {
                     }
                 }
             } catch {
+                endScreenCaptureSessionIfNeeded()
                 isListening = false
                 statusMessage = error.localizedDescription
             }
@@ -415,6 +473,7 @@ final class LiveTranslateViewModel: ObservableObject {
         }
 
         speechRecognizer.stopRecognition()
+        endScreenCaptureSessionIfNeeded()
         isListening = false
         if !pendingTranscriptText.isEmpty {
             scheduleTranslationEvaluation(stable: true)
@@ -426,6 +485,7 @@ final class LiveTranslateViewModel: ObservableObject {
         let startedAfterPause = now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold
         let latestSentence = latestDisplayTranscript(from: text, startedAfterPause: startedAfterPause)
         transcriptText = latestSentence
+        updatePictureInPicture()
         pendingTranscriptText = normalizeTranscript(latestSentence)
         lastTranscriptChangeAt = now
         if pendingTranscriptText.isEmpty {
@@ -441,6 +501,7 @@ final class LiveTranslateViewModel: ObservableObject {
         let startedAfterPause = now.timeIntervalSince(lastTranscriptChangeAt) >= Self.speechSegmentationPauseThreshold
         let latestSegment = latestDisplayTranscript(from: update.text, startedAfterPause: startedAfterPause)
         transcriptText = latestSegment
+        updatePictureInPicture()
         statusMessage = update.statusMessage
         pendingTranscriptText = normalizeTranscript(latestSegment)
         lastTranscriptChangeAt = now
@@ -561,6 +622,7 @@ final class LiveTranslateViewModel: ObservableObject {
         appleTranslationRequest = nil
         activeTranslationTask = nil
         self.translatedText = normalizedTranslation
+        updatePictureInPicture()
         lastTranslatedTranscriptText = normalizeTranscript(lastCommittedTranscriptText)
         lastTranslatedSourceLanguageID = sourceLanguage.id
         lastTranslatedTargetLanguageID = targetLanguage.id
