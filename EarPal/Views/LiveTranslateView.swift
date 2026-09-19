@@ -93,6 +93,13 @@ struct LiveTranslateView: View {
 
     private var bottomBar: some View {
         VStack(spacing: 10) {
+            if !viewModel.statusMessage.isEmpty {
+                Text(viewModel.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             sourceSelector
 
             HStack(spacing: 12) {

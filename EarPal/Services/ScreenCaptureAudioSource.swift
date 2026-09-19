@@ -8,6 +8,7 @@ import ScreenCaptureKit
 enum ScreenCaptureAudioSourceError: LocalizedError {
     case notPrepared
     case selectionCancelled
+    case screenCaptureUnavailable
     case screenCaptureRequiresiOS27
 
     var errorDescription: String? {
@@ -16,6 +17,8 @@ enum ScreenCaptureAudioSourceError: LocalizedError {
             return "No screen was selected for audio capture."
         case .selectionCancelled:
             return "Screen sharing selection was cancelled."
+        case .screenCaptureUnavailable:
+            return "Screen capture is not available on this device."
         case .screenCaptureRequiresiOS27:
             return "Screen audio capture requires iOS 27."
         }
@@ -68,13 +71,35 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
 
             Task { @MainActor in
                 let picker = SCContentSharingPicker.shared
+                guard picker.isAvailable else {
+                    self.resumeSelection(with: .failure(ScreenCaptureAudioSourceError.screenCaptureUnavailable))
+                    return
+                }
+
                 var configuration = SCContentSharingPickerConfiguration()
                 configuration.showsMicrophoneControl = false
                 configuration.showsCameraControl = false
                 picker.defaultConfiguration = configuration
                 picker.add(self)
+                picker.isActive = true
                 picker.present()
             }
+        }
+    }
+
+    private func resumeSelection(with result: Result<Void, Error>) {
+        stateLock.lock()
+        let continuation = selectionContinuation
+        selectionContinuation = nil
+        stateLock.unlock()
+        continuation?.resume(with: result)
+    }
+
+    private func deactivatePicker() {
+        Task { @MainActor in
+            let picker = SCContentSharingPicker.shared
+            picker.remove(self)
+            picker.isActive = false
         }
     }
 
@@ -126,28 +151,21 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
     ) {
         stateLock.lock()
         currentFilter = filter
-        let continuation = selectionContinuation
-        selectionContinuation = nil
         stateLock.unlock()
-        continuation?.resume()
+        resumeSelection(with: .success(()))
+        deactivatePicker()
     }
 
     @objc(contentSharingPicker:didCancelForStream:)
     func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
-        stateLock.lock()
-        let continuation = selectionContinuation
-        selectionContinuation = nil
-        stateLock.unlock()
-        continuation?.resume(throwing: ScreenCaptureAudioSourceError.selectionCancelled)
+        resumeSelection(with: .failure(ScreenCaptureAudioSourceError.selectionCancelled))
+        deactivatePicker()
     }
 
     @objc(contentSharingPickerStartDidFailWithError:)
     func contentSharingPickerStartDidFailWithError(_ error: any Error) {
-        stateLock.lock()
-        let continuation = selectionContinuation
-        selectionContinuation = nil
-        stateLock.unlock()
-        continuation?.resume(throwing: error)
+        resumeSelection(with: .failure(error))
+        deactivatePicker()
     }
 
     // MARK: - SCStreamOutput
