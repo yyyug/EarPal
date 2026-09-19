@@ -83,8 +83,8 @@ final class TranscriptPictureInPictureController: NSObject, ObservableObject {
             timebaseOut: &timebase
         )
         if let timebase {
-            CMTimebaseSetTime(timebase, .zero)
-            CMTimebaseSetRate(timebase, 1.0)
+            CMTimebaseSetTime(timebase, time: .zero)
+            CMTimebaseSetRate(timebase, rate: 1.0)
             displayLayer.controlTimebase = timebase
             self.timebase = timebase
         }
