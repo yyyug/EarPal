@@ -119,7 +119,7 @@ actor LocalASRStreamingSession {
     private let vadProcessor: StreamingVADProcessor
     private let transcriptHandler: @Sendable (LocalASRTranscriptUpdate) -> Void
     private let partialResultInterval: Float = 1.5
-    private let maxSegmentDuration: Float = 5.0
+    private let maxSegmentDuration: Float = 10.0
 
     private var fullAudio: [Float] = []
     private var activeSpeechStartSample: Int?

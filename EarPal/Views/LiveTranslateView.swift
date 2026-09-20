@@ -25,11 +25,6 @@ struct LiveTranslateView: View {
                 .ignoresSafeArea()
             )
             .navigationTitle("EarPal")
-            .sheet(isPresented: settingsPresented) {
-                SettingsSheet()
-                    .environmentObject(viewModel)
-                    .environmentObject(modelManager)
-            }
             .fullScreenCover(isPresented: $showPresenterMode) {
                 PresenterView(
                     text: viewModel.translatedText.isEmpty ? viewModel.transcriptText : viewModel.translatedText,
@@ -122,11 +117,6 @@ struct LiveTranslateView: View {
                 }
                 .disabled(viewModel.transcriptText.isEmpty)
                 .accessibilityLabel("Presenter Mode")
-
-                Button("Settings") {
-                    viewModel.isShowingAudioOptions = true
-                }
-                .buttonStyle(.bordered)
             }
         }
         .padding(.horizontal, 20)
@@ -172,39 +162,21 @@ ForEach(AudioCaptureSourceOption.allCases.filter { option in
         return "Tap Start to choose the screen whose audio you want to translate."
     }
 
-    private var settingsPresented: Binding<Bool> {
-        Binding(
-            get: { viewModel.isShowingAudioOptions || viewModel.isShowingModelManagement },
-            set: { isPresented in
-                viewModel.isShowingAudioOptions = isPresented
-                viewModel.isShowingModelManagement = isPresented
-            }
-        )
-    }
-
     @ViewBuilder
     private var appleTranslationBridge: some View {
         if modelManager.selectedTranslationEngine == .apple,
            let request = viewModel.appleTranslationRequest {
-            if #available(iOS 18.0, *) {
-                AppleTranslationBridge(
-                    request: request,
-                    onTranslated: { translatedText in
-                        viewModel.receiveAppleTranslation(translatedText, for: request)
-                    },
-                    onFailure: { error in
-                        viewModel.failAppleTranslation(error, for: request)
-                    }
-                )
-                .frame(width: 0, height: 0)
-                .hidden()
-            } else {
-                Color.clear
-                    .frame(width: 0, height: 0)
-                    .task(id: request.id) {
-                        viewModel.appleTranslationUnavailable(for: request)
-                    }
-            }
+            AppleTranslationBridge(
+                request: request,
+                onTranslated: { translatedText in
+                    viewModel.receiveAppleTranslation(translatedText, for: request)
+                },
+                onFailure: { error in
+                    viewModel.failAppleTranslation(error, for: request)
+                }
+            )
+            .frame(width: 0, height: 0)
+            .hidden()
         }
     }
 
@@ -261,162 +233,6 @@ private struct ContentCard: View {
         .padding(18)
         .frame(maxWidth: .infinity)
         .background(Color.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-    }
-}
-
-private struct SettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var viewModel: LiveTranslateViewModel
-    @EnvironmentObject private var modelManager: ModelManager
-
-    var body: some View {
-        NavigationStack {
-            List {
-                speechOutputSection
-
-                Section("Speech Recognition") {
-                    Picker(
-                        "Speech Recognition Engine",
-                        selection: Binding(
-                            get: { modelManager.selectedASREngine },
-                            set: { modelManager.select(asr: $0) }
-                        )
-                    ) {
-                        ForEach(ASREngine.allCases) { engine in
-                            Text(speechRecognitionLabel(for: engine))
-                                .tag(engine)
-                        }
-                    }
-                }
-
-                if modelManager.selectedASREngine == .senseVoice {
-                    Section("SenseVoice Speech Recognition") {
-                        Picker(
-                            "Backend",
-                            selection: Binding(
-                                get: { modelManager.selectedSenseVoiceBackend },
-                                set: { modelManager.selectSenseVoiceBackend($0) }
-                            )
-                        ) {
-                            ForEach(SenseVoiceBackend.allCases) { backend in
-                                Text(backend.displayName)
-                                    .tag(backend)
-                            }
-                        }
-
-                        Text(modelManager.selectedSenseVoiceBackendStatus)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Picker(
-                            "Recognition Language",
-                            selection: Binding(
-                                get: { modelManager.selectedSenseVoiceLanguage },
-                                set: { modelManager.selectSenseVoiceLanguage($0) }
-                            )
-                        ) {
-                            ForEach(SenseVoiceLanguageOption.allCases) { option in
-                                Text(option.displayName)
-                                    .tag(option)
-                            }
-                        }
-
-                        Text("Match Source Language follows the current From language. Languages outside SenseVoice's bundled set fall back to auto detection.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Translation") {
-                    Toggle(
-                        "Translation",
-                        isOn: Binding(
-                            get: { viewModel.isTranslationEnabled },
-                            set: { viewModel.setTranslationEnabled($0) }
-                        )
-                    )
-
-                    Picker("From", selection: $viewModel.sourceLanguage) {
-                        ForEach(viewModel.languageOptions) { language in
-                            Text(language.displayName)
-                                .tag(language)
-                        }
-                    }
-
-                    if viewModel.isTranslationEnabled {
-                        Picker("To", selection: $viewModel.targetLanguage) {
-                            ForEach(viewModel.languageOptions) { language in
-                                Text(language.displayName)
-                                    .tag(language)
-                            }
-                        }
-
-                        Button("Swap Languages") {
-                            viewModel.swapLanguages()
-                        }
-                    }
-                }
-
-                Section("Models") {
-                    NavigationLink("Download Models") {
-                        ModelManagementView()
-                            .environmentObject(modelManager)
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-
-    private var speechRatePercentageText: String {
-        let normalized = ((viewModel.speechRate - 0.2) / 0.6).clamped(to: 0...1)
-        return "\(Int((normalized * 100).rounded()))%"
-    }
-
-    @ViewBuilder
-    private var speechOutputSection: some View {
-        Section("Speech Output") {
-            Toggle("Auto Speak", isOn: $viewModel.autoSpeak)
-
-            if viewModel.availableVoices.isEmpty {
-                LabeledContent("Voice") {
-                    Text("No Apple voices available")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Picker("Voice", selection: $viewModel.selectedVoiceIdentifier) {
-                    ForEach(viewModel.availableVoices) { voice in
-                        Text(voice.displayName)
-                            .tag(voice.identifier)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Speech Speed")
-                Slider(value: $viewModel.speechRate, in: 0.2...0.8, step: 0.05)
-                Text(speechRatePercentageText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func speechRecognitionLabel(for engine: ASREngine) -> String {
-        modelManager.canUse(engine) ? engine.displayName : "\(engine.displayName) (Install model)"
-    }
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 

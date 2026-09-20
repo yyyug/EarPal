@@ -28,25 +28,13 @@ enum ScreenCaptureAudioSourceError: LocalizedError {
 #if canImport(ScreenCaptureKit)
 
 final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCStreamDelegate, SCContentSharingPickerObserver {
-    private let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 16_000,
-        channels: 1,
-        interleaved: false
-    )!
     private let sampleQueue = DispatchQueue(label: "com.earpal.screen-audio.samples")
     private let stateLock = NSLock()
+    private let sampleConverter = AudioSampleConverter()
     private var stream: SCStream?
     private var currentFilter: SCContentFilter?
     private var selectionContinuation: CheckedContinuation<Void, Error>?
     private var chunkHandler: (@Sendable ([Float], Int) -> Void)?
-    private var converter: AVAudioConverter?
-    private var converterInputKey: AudioFormatKey?
-
-    private struct AudioFormatKey: Equatable {
-        let sampleRate: Double
-        let channelCount: Int
-    }
 
     var isPrepared: Bool {
         stateLock.lock()
@@ -130,9 +118,18 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
     func stop() throws {
         stateLock.lock()
         let stream = self.stream
+        let handler = chunkHandler
         self.stream = nil
         chunkHandler = nil
         stateLock.unlock()
+
+        sampleQueue.sync {
+            defer { sampleConverter.reset() }
+            guard let handler else { return }
+            let tail = sampleConverter.flush()
+            guard !tail.isEmpty else { return }
+            handler(tail, AudioSampleConverter.targetSampleRate)
+        }
 
         if let stream {
             Task {
@@ -179,17 +176,13 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         guard sampleBuffer.isValid else { return }
 
         guard let pcmBuffer = makePCMBuffer(from: sampleBuffer) else { return }
-        guard let converted = convertToTarget(pcmBuffer) else { return }
-        guard let channelData = converted.floatChannelData?.pointee else { return }
-
-        let frameLength = Int(converted.frameLength)
-        guard frameLength > 0 else { return }
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
+        let samples = sampleConverter.samples(from: pcmBuffer)
+        guard !samples.isEmpty else { return }
 
         stateLock.lock()
         let handler = chunkHandler
         stateLock.unlock()
-        handler?(samples, 16_000)
+        handler?(samples, AudioSampleConverter.targetSampleRate)
     }
 
     // MARK: - SCStreamDelegate
@@ -224,41 +217,6 @@ final class ScreenCaptureAudioSource: NSObject, AudioSource, SCStreamOutput, SCS
         } catch {
             return nil
         }
-    }
-
-    private func convertToTarget(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        let inputKey = AudioFormatKey(
-            sampleRate: buffer.format.sampleRate,
-            channelCount: Int(buffer.format.channelCount)
-        )
-        if converterInputKey != inputKey {
-            converterInputKey = inputKey
-            converter = AVAudioConverter(from: buffer.format, to: targetFormat)
-        }
-        guard let converter else { return nil }
-
-        let frameCapacity = AVAudioFrameCount(
-            (Double(buffer.frameLength) * targetFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
-        ) + 32
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
-            return nil
-        }
-
-        var didProvideInput = false
-        var conversionError: NSError?
-        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
-            if didProvideInput {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            didProvideInput = true
-            outStatus.pointee = .haveData
-            return buffer
-        }
-
-        guard conversionError == nil else { return nil }
-        guard status == .haveData || status == .inputRanDry else { return nil }
-        return outputBuffer
     }
 }
 

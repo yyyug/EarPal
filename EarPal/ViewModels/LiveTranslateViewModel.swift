@@ -4,6 +4,8 @@ import Foundation
 @MainActor
 final class LiveTranslateViewModel: ObservableObject {
     private static let speechSegmentationPauseThreshold: TimeInterval = 1.0
+    private static let appleTranslationTimeout: TimeInterval = 30
+    private static let maxDisplayedTranscriptCharacters = 240
     private static let translationEnabledKey = "live.translation.enabled"
     private static let audioSourceKey = "live.audio.source"
 
@@ -35,8 +37,6 @@ final class LiveTranslateViewModel: ObservableObject {
     @Published var speechRate: Double = 0.5
     @Published var selectedVoiceIdentifier = ""
     @Published private(set) var availableVoices: [AppleSpeechPlaybackService.VoiceOption] = []
-    @Published var isShowingAudioOptions = false
-    @Published var isShowingModelManagement = false
     @Published var statusMessage = ""
     @Published var translationStatus: TranslationStatus = .idle
     @Published var appleTranslationRequest: AppleTranslationRequest?
@@ -60,6 +60,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private var localStreamingSession: LocalASRStreamingSession?
     private var translationDebounceTask: Task<Void, Never>?
     private var activeTranslationTask: Task<Void, Never>?
+    private var appleTranslationTimeoutTask: Task<Void, Never>?
     private var translationGeneration = 0
     private var pendingTranscriptText = ""
     private var lastCommittedTranscriptText = ""
@@ -68,6 +69,7 @@ final class LiveTranslateViewModel: ObservableObject {
     private var lastTranslatedTargetLanguageID = ""
     private var lastTranslatedEngineID = ""
     private var lastTranscriptChangeAt = Date.distantPast
+    private var lastRawRecognizedText = ""
     private var lastCompletedDisplayTranscript = ""
     private var lastSpokenTranscriptText = ""
     private var lastSpokenLanguageID = ""
@@ -210,6 +212,7 @@ final class LiveTranslateViewModel: ObservableObject {
         lastTranslatedTargetLanguageID = ""
         lastTranslatedEngineID = ""
         lastCompletedDisplayTranscript = ""
+        lastRawRecognizedText = ""
         lastSpokenTranscriptText = ""
         lastSpokenLanguageID = ""
     }
@@ -254,14 +257,9 @@ final class LiveTranslateViewModel: ObservableObject {
 
     func failAppleTranslation(_ error: Error, for request: AppleTranslationRequest) {
         guard request.generation == translationGeneration else { return }
+        cancelAppleTranslationTimeout()
         appleTranslationRequest = nil
         translationStatus = .failed(error.localizedDescription)
-    }
-
-    func appleTranslationUnavailable(for request: AppleTranslationRequest) {
-        guard request.generation == translationGeneration else { return }
-        appleTranslationRequest = nil
-        translationStatus = .failed("Apple Translate requires iOS 18.0 or later.")
     }
 
     func refreshTranslationIfNeeded() {
@@ -487,7 +485,10 @@ final class LiveTranslateViewModel: ObservableObject {
         transcriptText = latestSentence
         updatePictureInPicture()
         pendingTranscriptText = normalizeTranscript(latestSentence)
-        lastTranscriptChangeAt = now
+        if text != lastRawRecognizedText {
+            lastRawRecognizedText = text
+            lastTranscriptChangeAt = now
+        }
         if pendingTranscriptText.isEmpty {
             translationDebounceTask?.cancel()
             translationStatus = .idle
@@ -504,7 +505,10 @@ final class LiveTranslateViewModel: ObservableObject {
         updatePictureInPicture()
         statusMessage = update.statusMessage
         pendingTranscriptText = normalizeTranscript(latestSegment)
-        lastTranscriptChangeAt = now
+        if update.text != lastRawRecognizedText {
+            lastRawRecognizedText = update.text
+            lastTranscriptChangeAt = now
+        }
         if update.isFinal {
             scheduleTranslationEvaluation(stable: true)
         } else {
@@ -565,6 +569,10 @@ final class LiveTranslateViewModel: ObservableObject {
     private func beginTranslation(for sourceText: String) {
         let normalized = normalizeTranscript(sourceText)
         guard !normalized.isEmpty else { return }
+        guard sourceLanguage.id != targetLanguage.id else {
+            translationStatus = .failed("Choose different source and target languages.")
+            return
+        }
         guard shouldTranslate(normalized) else {
             translationStatus = .idle
             return
@@ -586,6 +594,7 @@ final class LiveTranslateViewModel: ObservableObject {
                 sourceLanguageID: sourceLanguage.id,
                 targetLanguageID: targetLanguage.id
             )
+            startAppleTranslationTimeout(generation: generation)
         case .translateGemma:
             activeTranslationTask = Task { [weak self] in
                 guard let self else { return }
@@ -619,6 +628,7 @@ final class LiveTranslateViewModel: ObservableObject {
             return
         }
 
+        cancelAppleTranslationTimeout()
         appleTranslationRequest = nil
         activeTranslationTask = nil
         self.translatedText = normalizedTranslation
@@ -675,10 +685,28 @@ final class LiveTranslateViewModel: ObservableObject {
         translationDebounceTask = nil
         activeTranslationTask?.cancel()
         activeTranslationTask = nil
+        cancelAppleTranslationTimeout()
         translationGeneration += 1
         if clearAppleRequest {
             appleTranslationRequest = nil
         }
+    }
+
+    private func startAppleTranslationTimeout(generation: Int) {
+        cancelAppleTranslationTimeout()
+        appleTranslationTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.appleTranslationTimeout))
+            guard !Task.isCancelled, let self else { return }
+            guard generation == self.translationGeneration,
+                  self.appleTranslationRequest?.generation == generation else { return }
+            self.appleTranslationRequest = nil
+            self.translationStatus = .failed("Translation timed out. Please try again.")
+        }
+    }
+
+    private func cancelAppleTranslationTimeout() {
+        appleTranslationTimeoutTask?.cancel()
+        appleTranslationTimeoutTask = nil
     }
 
     private func normalizeTranscript(_ text: String) -> String {
@@ -689,6 +717,27 @@ final class LiveTranslateViewModel: ObservableObject {
     }
 
     private func latestDisplayTranscript(from recognizedText: String, startedAfterPause: Bool) -> String {
+        boundedDisplayText(resolveDisplayTranscript(from: recognizedText, startedAfterPause: startedAfterPause))
+    }
+
+    /// Keeps the transcript card readable when a source never pauses (for example screen audio),
+    /// where the recognizer keeps growing a single unpunctuated run.
+    private func boundedDisplayText(_ text: String) -> String {
+        let limit = Self.maxDisplayedTranscriptCharacters
+        guard text.count > limit else { return text }
+
+        let tail = String(text.suffix(limit))
+        if let boundary = tail.firstIndex(where: { $0.isWhitespace }) {
+            let trimmed = tail[tail.index(after: boundary)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return "… " + trimmed
+            }
+        }
+        return "…" + tail
+    }
+
+    private func resolveDisplayTranscript(from recognizedText: String, startedAfterPause: Bool) -> String {
         let normalized = normalizeTranscript(recognizedText)
         guard !normalized.isEmpty else { return "" }
 

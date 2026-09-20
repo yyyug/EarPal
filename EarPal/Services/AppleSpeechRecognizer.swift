@@ -180,6 +180,7 @@ final class AppleSpeechRecognizer {
     private func beginRecognitionTask(with recognizer: SFSpeechRecognizer) {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.addsPunctuation = true
         recognitionRequest = request
         recognitionTaskGeneration += 1
         let generation = recognitionTaskGeneration

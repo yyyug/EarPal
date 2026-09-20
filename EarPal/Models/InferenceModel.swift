@@ -20,6 +20,19 @@ enum ASREngine: String, CaseIterable, Identifiable {
             return "Qwen3-ASR"
         }
     }
+
+    var shortName: String {
+        switch self {
+        case .apple:
+            return "Apple"
+        case .senseVoice:
+            return "SenseVoice"
+        case .parakeet:
+            return "Parakeet"
+        case .qwen3:
+            return "Qwen3"
+        }
+    }
 }
 
 enum TranslationEngine: String, CaseIterable, Identifiable {
@@ -32,6 +45,15 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
         switch self {
         case .apple:
             return "Apple Translate"
+        case .translateGemma:
+            return "TranslateGemma"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .apple:
+            return "Apple"
         case .translateGemma:
             return "TranslateGemma"
         }

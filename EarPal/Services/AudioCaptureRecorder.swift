@@ -18,8 +18,7 @@ enum AudioCaptureRecorderError: LocalizedError {
 final class AudioCaptureRecorder {
     private let audioEngine = AVAudioEngine()
     private let audioSessionCoordinator: AudioSessionCoordinator
-    private var audioConverter: AVAudioConverter?
-    private var targetFormat: AVAudioFormat?
+    private let sampleConverter = AudioSampleConverter()
     private let stateLock = NSLock()
     private var isRecording = false
     private var captureSessionActive = false
@@ -55,23 +54,15 @@ final class AudioCaptureRecorder {
         chunkHandler = onSamples
         stateLock.unlock()
 
+        sampleConverter.reset()
+
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
-        guard
-            let targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: 16_000,
-                channels: 1,
-                interleaved: false
-            ),
-            let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-        else {
+        guard inputFormat.sampleRate > 0,
+              inputFormat.channelCount > 0,
+              AudioSampleConverter.canConvert(from: inputFormat) else {
             throw AudioCaptureRecorderError.recordingUnavailable
         }
-        stateLock.lock()
-        self.audioConverter = converter
-        self.targetFormat = targetFormat
-        stateLock.unlock()
 
         try audioSessionCoordinator.activateCaptureSession()
         captureSessionActive = true
@@ -97,6 +88,7 @@ final class AudioCaptureRecorder {
     func stopRecording() throws {
         stateLock.lock()
         let currentlyRecording = isRecording
+        let handler = chunkHandler
         isRecording = false
         chunkHandler = nil
         stateLock.unlock()
@@ -107,11 +99,9 @@ final class AudioCaptureRecorder {
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
+        flushPendingSamples(handler: handler)
         cleanupCaptureSession()
-        stateLock.lock()
-        audioConverter = nil
-        targetFormat = nil
-        stateLock.unlock()
+        sampleConverter.reset()
     }
 
     private func cleanupCaptureSession() {
@@ -120,50 +110,20 @@ final class AudioCaptureRecorder {
         audioSessionCoordinator.deactivateCaptureSession()
     }
 
-    private func processIncomingBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let converted = convertToTargetBuffer(buffer) else { return }
-        guard let channelData = converted.floatChannelData?.pointee else { return }
-        let frameLength = Int(converted.frameLength)
-        guard frameLength > 0 else { return }
+    private func flushPendingSamples(handler: (@Sendable ([Float], Int) -> Void)?) {
+        guard let handler else { return }
+        let tail = sampleConverter.flush()
+        guard !tail.isEmpty else { return }
+        handler(tail, AudioSampleConverter.targetSampleRate)
+    }
 
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
+    private func processIncomingBuffer(_ buffer: AVAudioPCMBuffer) {
+        let samples = sampleConverter.samples(from: buffer)
+        guard !samples.isEmpty else { return }
 
         stateLock.lock()
         let handler = chunkHandler
         stateLock.unlock()
-        handler?(samples, 16_000)
-    }
-
-    private func convertToTargetBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        stateLock.lock()
-        let audioConverter = self.audioConverter
-        let targetFormat = self.targetFormat
-        stateLock.unlock()
-        guard let audioConverter, let targetFormat else { return nil }
-
-        let targetFrameCapacity = AVAudioFrameCount(
-            (Double(buffer.frameLength) * targetFormat.sampleRate / buffer.format.sampleRate).rounded(.up)
-        ) + 32
-
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetFrameCapacity) else {
-            return nil
-        }
-
-        var didProvideInput = false
-        var conversionError: NSError?
-        let status = audioConverter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
-            if didProvideInput {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-
-            didProvideInput = true
-            outStatus.pointee = .haveData
-            return buffer
-        }
-
-        guard conversionError == nil else { return nil }
-        guard status == .haveData || status == .inputRanDry else { return nil }
-        return outputBuffer
+        handler?(samples, AudioSampleConverter.targetSampleRate)
     }
 }
